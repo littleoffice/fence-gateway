@@ -1,3 +1,9 @@
+# Attribution
+
+This project is an independent implementation of the work described in "Prompt Fencing: A Cryptographic Approach to Establishing Security Boundaries in Large Language Model Prompts" Peh S.
+
+I read the paper and found the research interesting, and built this project as an engineering implementation of the ideas presented in it. The research, ideas, and methodology are attributed to the original author. The system architecture, engineering direction, integration, testing, and repository are work of littleoffice, with AI-assisted development used extensively in implementing the code.
+
 # fence-gateway
 
 A verifying security gateway for prompt fencing (arXiv:2511.19727, Peh 2025), and
@@ -124,5 +130,4 @@ this package's own generator, which would hide any bug symmetric across both sid
 
 ## Licence
 
-The paper is CC BY 4.0. This implementation is offered under the same terms as
-`mcp-searxng-relay`.
+The paper is CC BY 4.0. This implementation is offered under Apache 2.0 license.
