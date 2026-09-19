@@ -1,3 +1,8 @@
+// Package fenceverify implements deterministic verification of prompt-fence
+// elements (arXiv:2511.19727): parsing and canonicalisation of <sec:fence>
+// content, Ed25519 signature verification under both the paper's literal
+// scheme and mcp-searxng-relay's construction, and public-key acquisition.
+// It has no I/O in the hot path and depends only on the Go standard library.
 package fenceverify
 
 import (
