@@ -36,6 +36,80 @@ CI gates and incident triage) is described in the paper's tooling and is a
 natural next addition on top of the `fenceverify` package, but is not yet
 implemented in this repository.
 
+## Architecture
+
+The transport is delegated to the [MCP go-sdk](https://github.com/modelcontextprotocol/go-sdk)
+— the same SDK the relay uses. The gateway is an **MCP server** to the
+downstream client and an **MCP client** to the upstream relay, bridging the two
+with fence verification injected on the return path. Verification itself
+(`fenceverify`) is transport-agnostic and depends only on the standard library.
+
+```mermaid
+flowchart LR
+    C["MCP client<br/>(Claude Desktop / Code / Cursor)"]
+
+    subgraph GW["fence-gateway (one process)"]
+        direction TB
+        SRV["downstream MCP server<br/>(go-sdk)"]
+        VER["verify()<br/>fenceverify: Ed25519,<br/>canonicalise, policy"]
+        CL["upstream MCP client<br/>(go-sdk)"]
+        KEYS["EndpointKeys<br/>pinning · rotation"]
+        SRV --> VER --> CL
+        KEYS -. supplies trusted keys .-> VER
+    end
+
+    subgraph R["mcp-searxng-relay"]
+        RMCP["MCP server /mcp"]
+        RKEY["/fence/public-key"]
+    end
+
+    C <-->|"MCP over stdio"| SRV
+    CL <-->|"MCP over Streamable HTTP<br/>(bearer token)"| RMCP
+    KEYS -->|"HTTPS GET — not MCP"| RKEY
+    RMCP --> WEB["SearXNG / web"]
+```
+
+The return-path check is the whole point (§7.4.3): the model cannot be its own
+security verifier, so a component in the transport does the deterministic
+signature check before any bytes reach the model.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as MCP client
+    participant G as fence-gateway
+    participant R as relay MCP
+    participant K as relay key endpoint
+
+    Note over G: startup
+    G->>K: GET /fence/public-key
+    K-->>G: Ed25519 public key + fingerprint
+    G->>R: initialize
+    R-->>G: capabilities
+    G->>R: tools/list
+    R-->>G: tools
+    Note over G: register a verifying proxy handler per tool
+
+    Note over C,G: per tool call
+    C->>G: tools/call
+    G->>R: tools/call (raw args forwarded)
+    R-->>G: result containing a signed fence
+
+    alt signature valid
+        G-->>C: result, optionally with signature stripped
+    else verification fails, policy reject
+        G-->>C: isError, content withheld, reason to audit log
+    else key looks rotated
+        G->>K: refetch key, verify once more
+        K-->>G: current key
+        G-->>C: result, or isError if it still fails
+    end
+```
+
+> The diagrams show the current stdio deployment. A **Streamable HTTP**
+> transport — so one gateway can serve a fleet remotely, with bearer auth and
+> CSRF protection in front of the downstream server — is in progress.
+
 ## Quick start
 
 ```bash
