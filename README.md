@@ -68,8 +68,10 @@ docker run --rm -i -e MCP_AUTH_TOKEN=… ghcr.io/littleoffice/promptfence-gatewa
 
 Build it yourself reproducibly with `./build.sh <version>` (podman), or see
 [`docs/supply-chain.md`](docs/supply-chain.md) for the full build-provenance,
-reproducibility, and release-attestation story, and
-[`docs/SECURITY.md`](docs/SECURITY.md) for vulnerability reporting.
+reproducibility, and release-attestation story,
+[`docs/SECURITY.md`](docs/SECURITY.md) for vulnerability reporting, and
+[`docs/conformance.md`](docs/conformance.md) for how the gateway maps onto the
+paper's Security Gateway (§4.5, §7.4.3).
 
 `-policy` is `reject` (Definition 4.5 rule 4 — drop the result), `annotate` (forward
 with a warning and `isError`), or `audit` (log only). Only `reject` actually stops an
