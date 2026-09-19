@@ -34,6 +34,11 @@ import (
 	fv "github.com/littleoffice/fence-gateway/fenceverify"
 )
 
+// ServerVersion is stamped at build time via
+// -ldflags "-X main.ServerVersion=...". It is derived from `git describe` by
+// build.sh and the release workflow, and left as "dev" for plain `go build`.
+var ServerVersion = "dev"
+
 // Policy decides what happens when a tool result fails verification.
 type Policy string
 
@@ -78,8 +83,14 @@ func main() {
 		maxAge   = flag.Duration("max-age", 0, "reject fences older than this (0 disables)")
 		stripSig = flag.Bool("strip-signature", false, "remove signature attributes from verified fences before forwarding")
 		reqAll   = flag.Bool("require-all-fenced", false, "treat unsigned text in a tool result as a failure")
+		version  = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
+
+	if *version {
+		fmt.Println(ServerVersion)
+		return
+	}
 
 	cfg := config{
 		upstream: *upstream, token: *token, policy: Policy(*policy),

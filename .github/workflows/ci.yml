@@ -1,0 +1,149 @@
+# .github/workflows/ci.yml
+#
+# Continuous-integration workflow. Runs on every push to any branch and on
+# every pull request targeting main.
+#
+# What it does:
+#   - lint:    golangci-lint over the Go code; actionlint over the workflow
+#              files themselves (catches YAML / Action-syntax bugs locally).
+#   - test:    go vet, go test with -race and -count=1 (no caching), and
+#              govulncheck against the live vulnerability database.
+#   - build:   builds the container image to confirm the Dockerfile is still
+#              healthy. Does NOT push and does NOT attest — those only happen
+#              on tagged release builds (see release.yml).
+#
+# fence-gateway is a pure-Go, standard-library-only program: no cgo and no
+# third-party modules. That keeps this pipeline simple — there are no native
+# libraries to fetch and verify, unlike the relay it verifies for.
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+  schedule:
+    # Daily at 37 5 * * *. The govulncheck step is only as fresh as the last
+    # run: a stdlib advisory published during a quiet week goes unnoticed until
+    # someone happens to push. Re-running the pipeline daily re-asks the
+    # question against the current vulnerability database. Off-the-hour minute
+    # to avoid GitHub's scheduler thundering herd.
+    - cron: '37 5 * * *'
+
+permissions:
+  contents: read
+
+# Cancel any in-progress run when a new push to the same branch arrives.
+# Saves runner minutes on rapid iteration; harmless because CI is read-only.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          # Pinned instead of `latest`: with `latest` a new golangci-lint
+          # release can turn CI red (or green) with no code change, so a green
+          # run wouldn't prove the code passes the linter version you ship
+          # with. This is a free-form action input, not a `uses:` ref, so
+          # Dependabot does NOT bump it — update this line by hand.
+          #
+          # golangci-lint refuses to lint a module whose `go` directive targets
+          # a NEWER language (minor) version than the linter itself was built
+          # with, so this version must be built with Go >= the go.mod `go`
+          # directive's minor (currently 1.27). v2.13.2 is the first release
+          # built with Go 1.27, which satisfies `go 1.27.1`; v2.12.2 (built with
+          # Go 1.26) would error out. Keep this in step with the go.mod `go`
+          # directive — same version mcp-searxng-relay pins.
+          version: v2.13.2
+          args: --timeout=5m
+
+      - name: actionlint
+        # Lints the workflow files themselves — catches a class of bug that
+        # only surfaces when GitHub tries to schedule the run. Fetched with
+        # `go run pkg@version`, which resolves and verifies actionlint (and its
+        # dependencies) through the Go module proxy and checksum database, so
+        # no separate digest-pinning file is needed. Pinned to an exact version
+        # so a new actionlint release cannot change CI's verdict with no code
+        # change; bump by hand (Dependabot does not see this string).
+        run: |
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        # -race catches data races (the gateway pumps stdio while refreshing
+        # keys). -count=1 disables Go's test result cache so a green CI means
+        # the tests actually ran on this revision.
+        run: go test -race -count=1 -v ./...
+
+      - name: govulncheck
+        # Pinned instead of `@latest` so the scanner version is reproducible;
+        # the advisory DATABASE is still fetched fresh at run time, so the daily
+        # schedule keeps catching newly published advisories — pinning the tool
+        # does not freeze what it checks against. This version string is not
+        # visible to Dependabot (it lives in workflow YAML, not go.mod).
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+          govulncheck ./...
+
+  build:
+    name: Build container (sanity)
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+      - name: Derive build args
+        # Same derivation as build.sh — SOURCE_DATE_EPOCH from the commit,
+        # SERVER_VERSION from the tag-or-commit description. On a non-tag build
+        # these end up as a commit short-SHA, which is fine for a sanity check
+        # (we never push these).
+        run: |
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct HEAD)" >> "$GITHUB_ENV"
+          echo "SERVER_VERSION=$(git describe --tags --always --dirty)" >> "$GITHUB_ENV"
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: false
+          load: false
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            SERVER_VERSION=${{ env.SERVER_VERSION }}
+          tags: fence-gateway:ci

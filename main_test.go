@@ -38,7 +38,7 @@ func newFakeRelay(t *testing.T) *fakeRelay {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fence/public-key", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"version":"1.0","algorithm":"Ed25519","publicKey":%q,"fingerprint":%q}`,
+		_, _ = fmt.Fprintf(w, `{"version":"1.0","algorithm":"Ed25519","publicKey":%q,"fingerprint":%q}`,
 			base64.StdEncoding.EncodeToString(r.pub), fv.Fingerprint(r.pub))
 	})
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, req *http.Request) {
