@@ -1,19 +1,19 @@
 # ---------------------------------------------------------------------------
 # Reproducible-build inputs.
 #
-# fence-gateway is a pure-Go program (standard library only, no cgo, no
-# third-party modules), so the build is reproducible relative to a much
-# smaller set of inputs than a cgo project needs:
+# fence-gateway is a pure-Go program (no cgo). Its dependencies are the MCP
+# go-sdk and a small set of pure-Go modules — all pinned by content hash in
+# go.sum — so the build is reproducible relative to:
 #   * the builder base-image digest pinned below,
-#   * the committed go.mod (there is no go.sum: the module has no
-#     dependencies beyond the standard library),
+#   * the committed go.mod / go.sum,
 #   * the SERVER_VERSION value passed in,
 #   * SOURCE_DATE_EPOCH passed in.
 #
-# There are no native/static libraries to fetch and no digest-pinning file
-# (native-deps.sha256) because nothing is downloaded during the build: with
-# an empty require set, `go mod download` is a no-op and `go build` never
-# touches the network. That removes an entire class of supply-chain surface.
+# There are no native/static libraries and no digest-pinning file
+# (native-deps.sha256): every dependency is a Go module, verified against
+# go.sum and the Go checksum database during `go mod download`. The download
+# step needs network access to the module proxy; there is nothing fetched
+# outside the go.sum-pinned set.
 #
 # Canonical invocation (podman):
 #   SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct HEAD)"
@@ -50,11 +50,10 @@ ARG SERVER_VERSION
 
 WORKDIR /app
 
-# Fetch dependencies as a separate, cache-friendly layer. go.mod is treated
-# as a frozen input: -mod=readonly forbids `go mod download` from rewriting
-# it. There is no go.sum to copy because the module has no external
-# dependencies; if one is ever added, add `COPY go.sum ./` here too.
-COPY go.mod ./
+# Fetch dependencies as a separate, cache-friendly layer. go.mod and go.sum are
+# treated as frozen inputs: -mod=readonly forbids `go mod download` from
+# rewriting either, so the build cannot silently pull in an unpinned module.
+COPY go.mod go.sum ./
 ENV GOFLAGS="-mod=readonly"
 RUN go mod download
 

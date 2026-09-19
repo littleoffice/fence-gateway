@@ -39,7 +39,7 @@ implemented in this repository.
 ## Quick start
 
 ```bash
-# Build the gateway binary (module root). No dependencies beyond the Go stdlib.
+# Build the gateway binary (module root). Uses the MCP go-sdk for transport.
 go build -o fence-gateway .
 ./fence-gateway -version
 

@@ -12,9 +12,10 @@
 #              healthy. Does NOT push and does NOT attest — those only happen
 #              on tagged release builds (see release.yml).
 #
-# fence-gateway is a pure-Go, standard-library-only program: no cgo and no
-# third-party modules. That keeps this pipeline simple — there are no native
-# libraries to fetch and verify, unlike the relay it verifies for.
+# fence-gateway is a pure-Go program (no cgo); its dependencies are the MCP
+# go-sdk and a small pure-Go set, all pinned in go.sum. That keeps this pipeline
+# simple — there are no native libraries to fetch and verify, unlike the relay
+# it verifies for.
 
 name: CI
 

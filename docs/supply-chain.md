@@ -31,40 +31,54 @@ repository. Their role is not nominal:
 
 **What this means for a reviewer.** AI-generated code can contain subtle errors
 that read as plausible. The mitigation this project relies on is human review,
-building, and testing by an accountable maintainer, plus the fact that the
-gateway takes **no third-party dependencies at all** (see below) and ships in a
-minimal runtime image. It is not a claim of perfection. A reviewer who would
-independently audit any third-party code before deploying it in a sensitive
-environment should do so here too; the provenance does not change that
-obligation, it just makes it explicit.
+building, and testing by an accountable maintainer, a deliberately small
+dependency set (see below), and a minimal runtime image. It is not a claim of
+perfection. A reviewer who would independently audit any third-party code before
+deploying it in a sensitive environment should do so here too; the provenance
+does not change that obligation, it just makes it explicit.
 
 ## Dependency inventory
 
-The gateway has **zero third-party dependencies.** Every import in the codebase
-is from the Go standard library — `crypto/ed25519`, `crypto/sha256`,
-`encoding/json`, `net/http`, `encoding/xml`, `bufio`, and friends. The
-authoritative statement of this is `go.mod`: its `require` block is empty, and
-there is **no `go.sum`** because there is nothing outside the standard library
-to hash.
+The **verification core** (`fenceverify`) still depends only on the Go standard
+library — `crypto/ed25519`, `crypto/sha256`, `encoding/xml`, and friends. The
+signature checking, canonicalisation, escaping, and key handling that actually
+decide whether a fence is trusted carry **no third-party code**, which is the
+property that matters most for this project.
 
-This is a deliberate design property, not an accident of a young project. The
-gateway's whole job is deterministic cryptographic verification of tool output
-before it reaches a model; that is precisely the kind of trust-critical code
-whose dependency surface should be as close to nothing as the language allows.
-The signature verification, canonicalisation, escaping, and key handling are all
-implemented against the standard library's `crypto/ed25519` and `crypto/sha256`.
+The **transport** is delegated to the official MCP SDK so the gateway speaks the
+same protocol, over the same Streamable HTTP transport, as the relay it verifies
+for — rather than re-implementing MCP by hand. That brings one direct dependency
+and a small, pure-Go transitive set. The authoritative list is `go.mod` /
+`go.sum`; the version numbers here are point-in-time and `go.mod` wins on any
+disagreement.
 
-What a reviewer trusts, then, is:
+### Direct dependency
 
-1. The first-party Go source in this repository (roughly 1,500 lines across
-   `main.go` and the `fenceverify` package), and
-2. The Go standard library and toolchain, pinned by the builder image digest and
-   the `go` directive in `go.mod`.
+| Module | Purpose |
+|---|---|
+| `github.com/modelcontextprotocol/go-sdk` | The official Model Context Protocol SDK — JSON-RPC framing, the stdio and Streamable HTTP transports, client and server sessions. The gateway is an MCP client to the upstream relay and an MCP server to the downstream client; the SDK owns both transports. Same SDK, same major version the relay pins (v1.8.0). |
 
-There is no transitive tree to enumerate, no WASM runtime, no precompiled native
-blob, and correspondingly no `native-deps.sha256` file — the relay this gateway
-verifies for needs one because it links Rust libraries for document extraction;
-the gateway links nothing but Go stdlib.
+### Transitive dependencies
+
+All pure Go, pinned by hash in `go.sum`:
+
+- `github.com/google/jsonschema-go` — JSON Schema handling the SDK uses for tool
+  input/output schemas.
+- `github.com/segmentio/encoding`, `github.com/segmentio/asm` — the SDK's strict,
+  case-sensitive JSON-RPC encoding.
+- `github.com/yosida95/uritemplate/v3` — URI templates used by the SDK.
+- `golang.org/x/oauth2`, `golang.org/x/sync`, `golang.org/x/sys`,
+  `golang.org/x/time` — Go-team extension modules pulled in across the SDK.
+
+There is **no cgo, no WASM runtime, and no precompiled native blob**, and
+correspondingly no `native-deps.sha256` file — the relay needs one because it
+links Rust libraries for document extraction; the gateway links only Go. Every
+dependency is a Go module verified through `go.sum` and the Go checksum database.
+
+What a reviewer trusts, then, is: the first-party Go source in this repository
+(the `fenceverify` package and the proxy in `main.go` / `proxy.go`), the MCP SDK
+and its pinned transitive set, and the Go standard library and toolchain (pinned
+by the builder image digest and the `go` directive in `go.mod`).
 
 ## Build provenance
 
@@ -77,14 +91,13 @@ that the result is auditable and reproducible:
   releases land, and it is checked against the `go` directive in `go.mod` by the
   [pin-consistency workflow](../.github/workflows/pin-consistency.yml), so CI
   cannot test one stdlib while the container ships another.
-- **No build-time network access, nothing downloaded.** With an empty module
-  graph, `go mod download` is a no-op and `go build` never touches the network.
-  There is no installer to run, no release asset to fetch, no digest to pin
-  out-of-band. This removes an entire class of supply-chain surface that a
-  project with native dependencies has to manage.
-- **Frozen module graph.** `go mod download` runs under
-  `GOFLAGS=-mod=readonly`, so even if a dependency is added later the build
-  cannot mutate the lockfile at build time.
+- **Frozen, hash-pinned module graph.** `go.mod`/`go.sum` pin every module by
+  content hash; `go mod download` runs under `GOFLAGS=-mod=readonly`, so the
+  build cannot rewrite the lockfile or pull in an unpinned module. The download
+  step reaches the Go module proxy, and nothing is fetched outside the
+  `go.sum`-pinned set. There is no installer to run and no release asset to pin
+  out-of-band — every dependency is a Go module, unlike the native static
+  libraries a cgo project has to manage.
 - **Statically linked binary.** Built with `CGO_ENABLED=0`, so the binary has no
   libc or shared-library dependency and runs on `scratch`. No C toolchain is
   involved, which also removes the C linker's random per-link build id from the
@@ -139,11 +152,10 @@ Every push and pull request runs [`ci.yml`](../.github/workflows/ci.yml):
 - **`go vet`** and **`go test -race -count=1`** — `-race` because the gateway
   pumps stdio while refreshing keys concurrently; `-count=1` disables the test
   cache so a green run means the tests actually executed on this revision.
-- **`govulncheck`** against the live Go vulnerability database. Because the
-  gateway is standard-library-only, this is in practice a check of the pinned Go
-  stdlib against newly published advisories — which is exactly why the workflow
-  also runs on a **daily schedule**, so a stdlib advisory published during a
-  quiet week is caught without waiting for the next push.
+- **`govulncheck`** against the live Go vulnerability database — a call-graph
+  scan of the pinned Go stdlib and the module set for advisories that actually
+  reach reachable code. It also runs on a **daily schedule**, so an advisory
+  published during a quiet week is caught without waiting for the next push.
 - **A container build** (no push) confirming the `Dockerfile` still builds.
 
 Actions are pinned by commit SHA (with the human-readable version in a trailing
@@ -154,9 +166,11 @@ ecosystems daily.
 
 A reviewer can independently verify the build without trusting this document:
 
-- **There is nothing to `go mod verify`** — the module has no external
-  dependencies. The trust surface is the first-party source plus the pinned Go
-  toolchain, and both are visible in the repository.
+- **`go.sum` pins every dependency by hash**, and `go mod verify` checks the
+  local module cache against those hashes. The hashes are also checked against
+  the Go checksum database (`sum.golang.org`) during `go mod download` unless an
+  operator has explicitly disabled it. The first-party source plus the pinned Go
+  toolchain and this pinned module set are the whole trust surface.
 - **The build is bit-for-bit reproducible** relative to the pinned inputs
   (base-image digest, source commit, `SOURCE_DATE_EPOCH`). Verify by running the
   canonical build twice on the same tagged commit and comparing the image
