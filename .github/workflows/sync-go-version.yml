@@ -1,8 +1,8 @@
 # .github/workflows/sync-go-version.yml
 #
 # Auto-companion to pin-consistency.yml. When Dependabot's `docker` ecosystem
-# bumps the builder base image to a new Go patch (e.g. golang:1.24.7 ->
-# golang:1.24.8), this workflow rewrites the `go` directive in go.mod to match
+# bumps the builder base image to a new Go patch (e.g. golang:1.27.1 ->
+# golang:1.27.2), this workflow rewrites the `go` directive in go.mod to match
 # and pushes that one-line commit onto the same PR branch. pin-consistency.yml
 # then flips green, and — because the commit is pushed with a token that is NOT
 # the default GITHUB_TOKEN (see below) — the full ci.yml matrix re-runs against
@@ -127,14 +127,14 @@ jobs:
             exit 0
           fi
 
-          # Go version in the builder base image, e.g. the "1.24.8" in
-          # `FROM docker.io/golang:1.24.8-trixie@sha256:...`. Same extraction as
+          # Go version in the builder base image, e.g. the "1.27.2" in
+          # `FROM docker.io/golang:1.27.2-trixie@sha256:...`. Same extraction as
           # pin-consistency.yml so the fixer and the guard can never disagree:
           # only FROM lines, so a stale `golang:X.Y.Z` in a comment is ignored.
           dockerfile_go="$(grep -iE '^[[:space:]]*FROM[[:space:]]' Dockerfile \
             | grep -oiE 'golang:[0-9]+\.[0-9]+\.[0-9]+' | head -n1 | cut -d: -f2 || true)"
 
-          # The `go` directive in go.mod, e.g. "1.24.7" from `go 1.24.7`.
+          # The `go` directive in go.mod, e.g. "1.27.1" from `go 1.27.1`.
           gomod_go="$(grep -oE '^go[[:space:]]+[0-9]+\.[0-9]+(\.[0-9]+)?' go.mod \
             | head -n1 | awk '{print $2}' || true)"
 

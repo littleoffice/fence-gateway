@@ -55,15 +55,15 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Go version baked into the builder base image, e.g. the "1.24.7" in
-          # `FROM docker.io/golang:1.24.7-trixie@sha256:...`. Only FROM lines
+          # Go version baked into the builder base image, e.g. the "1.27.1" in
+          # `FROM docker.io/golang:1.27.1-trixie@sha256:...`. Only FROM lines
           # are considered — matching bare `golang:X.Y.Z` anywhere would also
           # catch stale references in comments, which would make this check
           # fail on a false mismatch.
           dockerfile_go="$(grep -iE '^[[:space:]]*FROM[[:space:]]' Dockerfile \
             | grep -oiE 'golang:[0-9]+\.[0-9]+\.[0-9]+' | head -n1 | cut -d: -f2 || true)"
 
-          # The `go` directive in go.mod, e.g. "1.24.7" from `go 1.24.7`.
+          # The `go` directive in go.mod, e.g. "1.27.1" from `go 1.27.1`.
           gomod_go="$(grep -oE '^go[[:space:]]+[0-9]+\.[0-9]+(\.[0-9]+)?' go.mod \
             | head -n1 | awk '{print $2}' || true)"
 

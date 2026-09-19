@@ -35,13 +35,14 @@ ARG SERVER_VERSION=dev
 
 # Pin the builder image by content digest, not by tag. Tags are mutable;
 # digests are immutable. This digest is the multi-arch manifest-list digest
-# for golang:1.24.7-trixie, so the same Dockerfile builds reproducibly on
-# amd64 and arm64. Resolve a fresh digest with, e.g.:
-#   docker buildx imagetools inspect golang:1.24.7-trixie
+# for golang:1.27.1-trixie (the same version and pin mcp-searxng-relay uses),
+# so the same Dockerfile builds reproducibly on amd64 and arm64. Resolve a
+# fresh digest with, e.g.:
+#   docker buildx imagetools inspect golang:1.27.1-trixie
 # and copy the top-level index digest below. Bump deliberately as Go patch
 # releases land; pin-consistency.yml enforces that the Go version in this
 # FROM line matches the `go` directive in go.mod.
-FROM docker.io/golang:1.24.7-trixie@sha256:78425ae597f3be4c65852c7fc14bcba9befa72e8d512bf637a0aebff935e7c0e AS builder
+FROM docker.io/golang:1.27.1-trixie@sha256:9baa6b4187bbb98d240372a8a235ac0bb6b5ddd52bba1431dc2f7c0705862728 AS builder
 
 # ARGs do not cross FROM boundaries — re-declare to bring them into scope.
 ARG SOURCE_DATE_EPOCH

@@ -72,7 +72,7 @@ The `Dockerfile` produces the runtime artifact, and its build is structured so
 that the result is auditable and reproducible:
 
 - **Pinned build toolchain by digest.** The builder stage pins
-  `golang:1.24.7-trixie` by content digest (`sha256:…`), not by tag. Tags are
+  `golang:1.27.1-trixie` by content digest (`sha256:…`), not by tag. Tags are
   mutable; digests are immutable. The pin is bumped deliberately as new patch
   releases land, and it is checked against the `go` directive in `go.mod` by the
   [pin-consistency workflow](../.github/workflows/pin-consistency.yml), so CI

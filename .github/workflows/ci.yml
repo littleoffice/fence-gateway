@@ -64,11 +64,12 @@ jobs:
           # Dependabot does NOT bump it — update this line by hand.
           #
           # golangci-lint refuses to lint a module whose `go` directive targets
-          # a NEWER language version than the linter itself was built with, so
-          # this version must be built with Go >= the go.mod `go` directive
-          # (currently 1.24.7). v2.13.2 is built with Go 1.27, which satisfies
-          # that. If you ever bump the `go` directive past the linter's build
-          # Go, bump this in step.
+          # a NEWER language (minor) version than the linter itself was built
+          # with, so this version must be built with Go >= the go.mod `go`
+          # directive's minor (currently 1.27). v2.13.2 is the first release
+          # built with Go 1.27, which satisfies `go 1.27.1`; v2.12.2 (built with
+          # Go 1.26) would error out. Keep this in step with the go.mod `go`
+          # directive — same version mcp-searxng-relay pins.
           version: v2.13.2
           args: --timeout=5m
 
@@ -113,7 +114,7 @@ jobs:
         # does not freeze what it checks against. This version string is not
         # visible to Dependabot (it lives in workflow YAML, not go.mod).
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
           govulncheck ./...
 
   build:
