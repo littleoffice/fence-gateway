@@ -36,7 +36,27 @@ CI gates and incident triage) is described in the paper's tooling and is a
 natural next addition on top of the `fenceverify` package, but is not yet
 implemented in this repository.
 
-## Quick start
+## Transports
+
+The gateway speaks MCP over one of two transports, sharing the same verifying
+proxy core:
+
+- **stdio** (default) — a local subprocess of the MCP client. This is the
+  per-workstation shape.
+- **Streamable HTTP** (`MCP_PORT` set) — a network server, so one gateway can
+  sit in front of the relay for a whole fleet instead of being installed on
+  every workstation.
+
+Configuration splits cleanly: **verification behavior is set by flags**
+(`-upstream`, `-policy`, `-pin`, `-max-age`, `-strip-signature`,
+`-require-all-fenced`, `-paper-scheme`, `-tofu`, `-key-url`), and
+**deployment is set by environment variables** (mirroring the relay's names).
+The token the gateway presents *to the upstream relay* is `UPSTREAM_MCP_TOKEN`
+(or `-token`); the tokens clients present *to the gateway* in HTTP mode are the
+`MCP_AUTH_TOKEN*` family below — two different directions, two different
+secrets.
+
+## Quick start (stdio, local)
 
 ```bash
 # Build the gateway binary (module root). Uses the MCP go-sdk for transport.
@@ -44,26 +64,57 @@ go build -o fence-gateway .
 ./fence-gateway -version
 
 # In-line gateway (Claude Desktop config: point at this instead of the relay)
-./fence-gateway \
+UPSTREAM_MCP_TOKEN="$RELAY_TOKEN" ./fence-gateway \
   -upstream http://relay.internal:8080/mcp \
-  -token "$MCP_AUTH_TOKEN" \
   -pin 5fb07c6222c503de \
   -policy reject
 ```
 
-### Container
+## Running remotely (Streamable HTTP)
 
-The gateway also ships as a minimal, reproducibly-built container image
-(`FROM scratch`, non-root, statically linked, two files in the runtime layer).
-It speaks JSON-RPC over stdio, so run it with an attached stdin (`-i`):
+Set `MCP_PORT` to serve the Streamable HTTP transport; clients then point at the
+gateway's URL instead of the relay's. Bearer authentication is **mandatory** in
+this mode (the endpoint is network-reachable), and cross-origin (CSRF) and
+DNS-rebinding protections are on by default.
+
+| Variable | Purpose |
+|---|---|
+| `MCP_PORT` | Serve HTTP on this port (unset ⇒ stdio). |
+| `MCP_AUTH_TOKEN` | Single bearer token clients must present to the gateway. |
+| `MCP_AUTH_TOKENS` | Comma-separated `identity:token` pairs (a small fleet). |
+| `MCP_AUTH_TOKEN_FILE` | File of tokens, one `identity:token` per line (`#` comments allowed). |
+| `MCP_TLS_CERT` / `MCP_TLS_KEY` | Serve HTTPS directly (both or neither). Omit to terminate TLS at a reverse proxy. |
+| `UPSTREAM_MCP_TOKEN` | Bearer token the gateway presents to the upstream relay. |
+
+Tokens must be ≥32 characters (`openssl rand -hex 32`).
 
 ```bash
-docker run --rm -i ghcr.io/littleoffice/promptfence-gateway:latest \
-  -upstream https://relay.internal:8080/mcp \
-  -policy reject -pin 5fb07c6222c503de
+MCP_PORT=9090 \
+MCP_AUTH_TOKEN="$(openssl rand -hex 32)" \
+MCP_TLS_CERT=/etc/tls/tls.crt MCP_TLS_KEY=/etc/tls/tls.key \
+UPSTREAM_MCP_TOKEN="$RELAY_TOKEN" \
+./fence-gateway -upstream https://relay.internal:8080/mcp -policy reject -pin 5fb07c6222c503de
+```
 
-# Secrets come from the runtime environment, never baked into the image:
-docker run --rm -i -e MCP_AUTH_TOKEN=… ghcr.io/littleoffice/promptfence-gateway:latest …
+### Container
+
+The gateway ships as a minimal, reproducibly-built container image
+(`FROM scratch`, non-root, statically linked). Over stdio, run it with an
+attached stdin (`-i`); in HTTP mode, publish the port. Secrets come from the
+runtime environment, never baked into the image:
+
+```bash
+# stdio
+docker run --rm -i \
+  -e UPSTREAM_MCP_TOKEN=… \
+  ghcr.io/littleoffice/promptfence-gateway:latest \
+  -upstream https://relay.internal:8080/mcp -policy reject -pin 5fb07c6222c503de
+
+# Streamable HTTP (remote)
+docker run --rm -p 9090:9090 \
+  -e MCP_PORT=9090 -e MCP_AUTH_TOKEN=… -e UPSTREAM_MCP_TOKEN=… \
+  ghcr.io/littleoffice/promptfence-gateway:latest \
+  -upstream https://relay.internal:8080/mcp -policy reject -pin 5fb07c6222c503de
 ```
 
 Build it yourself reproducibly with `./build.sh <version>` (podman), or see
