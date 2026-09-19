@@ -58,7 +58,7 @@ func startHTTPGateway(t *testing.T, ctx context.Context, pub ed25519.PublicKey, 
 		t.Fatalf("register tools: %v", err)
 	}
 
-	hs := httptest.NewServer(newHTTPHandler(dSrv, tokens))
+	hs := httptest.NewServer(newHTTPHandler(dSrv, httpConfig{authTokens: tokens}))
 	t.Cleanup(hs.Close)
 	return hs.URL
 }

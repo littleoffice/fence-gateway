@@ -26,7 +26,7 @@ import (
 // library's net/http.CrossOriginProtection — the same defence the relay gets.
 // Bearer auth sits outermost so an unauthenticated request never reaches the
 // session machinery.
-func newHTTPHandler(server *mcp.Server, tokens map[tokenDigest]string) http.Handler {
+func newHTTPHandler(server *mcp.Server, hc httpConfig) http.Handler {
 	mcpHandler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return server },
 		nil,
@@ -36,22 +36,64 @@ func newHTTPHandler(server *mcp.Server, tokens map[tokenDigest]string) http.Hand
 	// curl, Go http.Client, an MCP agent — send neither header and pass
 	// through, so remote-agent traffic is unaffected.
 	protected := http.NewCrossOriginProtection().Handler(mcpHandler)
-	return requireAuth(tokens, protected)
+
+	mux := http.NewServeMux()
+	mux.Handle("/", requireAuth(hc, protected))
+	// RFC 9728 protected-resource metadata — unauthenticated by design (a client
+	// needs it *before* it can obtain a token), registered only when OAuth is on.
+	// Its specific path takes routing precedence over the "/" MCP handler.
+	if hc.oauth.enabled() {
+		mux.HandleFunc(oauthMetadataPath, hc.oauth.metadataHandler())
+	}
+	return mux
 }
 
-// requireAuth gates a handler behind the bearer-token table. The full
-// Authorization header is hashed once and looked up among fixed-length digests,
-// so the comparison cannot short-circuit on the first differing byte and the
-// offered header is never logged.
-func requireAuth(tokens map[tokenDigest]string, next http.Handler) http.Handler {
+// requireAuth gates a handler behind the configured credentials: the static
+// bearer-token table first (a fixed-length digest lookup that cannot
+// short-circuit on the first differing byte, and never logs the offered
+// header), then — if configured — an OAuth/OIDC JWT. A request that satisfies
+// neither gets 401; when OAuth is enabled the challenge points at the
+// protected-resource metadata so a spec-compliant client can discover the
+// issuer.
+func requireAuth(hc httpConfig, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got := sha256.Sum256([]byte(r.Header.Get("Authorization")))
-		if _, ok := tokens[got]; !ok {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="mcp"`)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		authz := r.Header.Get("Authorization")
+		staticOn := len(hc.authTokens) > 0
+		oauthOn := hc.oauth.enabled()
+
+		// No credential configured at all: open. runHTTP refuses to start in
+		// this state, so this path is reachable only from tests.
+		if !staticOn && !oauthOn {
+			next.ServeHTTP(w, r)
 			return
 		}
-		next.ServeHTTP(w, r)
+
+		// Static digest table first — an O(1) fixed-length lookup, cheaper than
+		// a JWT verification and the path most deployments use.
+		if staticOn {
+			if _, ok := hc.authTokens[sha256.Sum256([]byte(authz))]; ok {
+				next.ServeHTTP(w, r)
+				return
+			}
+		}
+
+		// Then OAuth: verify a presented Bearer JWT against the configured issuer.
+		if oauthOn {
+			if tok := bearerToken(authz); tok != "" {
+				if _, err := hc.oauth.Verify(r.Context(), tok); err == nil {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+		}
+
+		if oauthOn {
+			w.Header().Set("WWW-Authenticate",
+				`Bearer realm="mcp", resource_metadata="`+resourceMetadataURL(r, hc.trustForwarded)+`"`)
+		} else {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="mcp"`)
+		}
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	})
 }
 
@@ -59,11 +101,13 @@ func requireAuth(tokens map[tokenDigest]string, next http.Handler) http.Handler 
 // until a termination signal arrives, then drains in-flight requests.
 func (g *gateway) runHTTP(ctx context.Context, server *mcp.Server, hc httpConfig) error {
 	// Authentication is mandatory in HTTP mode: the endpoint is network-
-	// reachable and has no other gate. stdio mode is exempt because it is a
-	// local subprocess pipe.
-	if len(hc.authTokens) == 0 {
+	// reachable and has no other gate. Either the static token table or OAuth
+	// must be configured. stdio mode is exempt because it is a local
+	// subprocess pipe.
+	if len(hc.authTokens) == 0 && !hc.oauth.enabled() {
 		return errors.New("authentication is required when MCP_PORT is set: configure " +
-			"MCP_AUTH_TOKEN, MCP_AUTH_TOKENS, or MCP_AUTH_TOKEN_FILE (generate a token with `openssl rand -hex 32`)")
+			"MCP_AUTH_TOKEN / MCP_AUTH_TOKENS / MCP_AUTH_TOKEN_FILE (generate a token with `openssl rand -hex 32`), " +
+			"or delegate to an OAuth 2.0 / OIDC provider with MCP_OAUTH_ISSUER (+ MCP_OAUTH_AUDIENCE)")
 	}
 
 	if !hc.tlsEnabled() {
@@ -71,12 +115,9 @@ func (g *gateway) runHTTP(ctx context.Context, server *mcp.Server, hc httpConfig
 			"serving plain HTTP; bearer tokens depend on an external TLS terminator, or set MCP_TLS_CERT+MCP_TLS_KEY")
 	}
 
-	mux := http.NewServeMux()
-	mux.Handle("/", newHTTPHandler(server, hc.authTokens))
-
 	srv := &http.Server{
 		Addr:    ":" + hc.port,
-		Handler: g.logRequests(mux),
+		Handler: g.logRequests(newHTTPHandler(server, hc)),
 		// ReadHeaderTimeout guards against slow-header (Slowloris) clients.
 		// WriteTimeout is 0: the SDK manages SSE streams with their own
 		// deadlines, and a server-level write deadline would truncate them.
@@ -88,7 +129,8 @@ func (g *gateway) runHTTP(ctx context.Context, server *mcp.Server, hc httpConfig
 	sctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	g.audit.Printf("http.listen addr=%q tls=%t auth_identities=%d", srv.Addr, hc.tlsEnabled(), len(hc.authTokens))
+	g.audit.Printf("http.listen addr=%q tls=%t auth_identities=%d oauth=%q",
+		srv.Addr, hc.tlsEnabled(), len(hc.authTokens), hc.oauth.describe())
 
 	errc := make(chan error, 1)
 	go func() {

@@ -135,6 +135,18 @@ func main() {
 	}
 
 	ctx := context.Background()
+
+	// Compile the optional OAuth/OIDC verifier (MCP_OAUTH_*). Issuer-discovery
+	// mode performs OIDC discovery here — a bounded network call — so a
+	// misconfiguration fails startup rather than the first authenticated
+	// request. Nil when OAuth is unconfigured. Run in both transports so a
+	// half-configuration surfaces even over stdio, where it is otherwise unused.
+	oauth, err := newOAuthSettings(ctx)
+	if err != nil {
+		fatal("%v", err)
+	}
+	hc.oauth = oauth
+
 	if _, err := keys.Refresh(ctx); err != nil {
 		// Not fatal: the relay may not be serving its key endpoint yet.
 		// Verification will fail closed until a key arrives, which under

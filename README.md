@@ -73,9 +73,10 @@ UPSTREAM_MCP_TOKEN="$RELAY_TOKEN" ./fence-gateway \
 ## Running remotely (Streamable HTTP)
 
 Set `MCP_PORT` to serve the Streamable HTTP transport; clients then point at the
-gateway's URL instead of the relay's. Bearer authentication is **mandatory** in
-this mode (the endpoint is network-reachable), and cross-origin (CSRF) and
-DNS-rebinding protections are on by default.
+gateway's URL instead of the relay's. Authentication is **mandatory** in this
+mode (the endpoint is network-reachable) — a static bearer token, an OAuth 2.0 /
+OIDC provider, or both — and cross-origin (CSRF) and DNS-rebinding protections
+are on by default.
 
 | Variable | Purpose |
 |---|---|
@@ -86,7 +87,24 @@ DNS-rebinding protections are on by default.
 | `MCP_TLS_CERT` / `MCP_TLS_KEY` | Serve HTTPS directly (both or neither). Omit to terminate TLS at a reverse proxy. |
 | `UPSTREAM_MCP_TOKEN` | Bearer token the gateway presents to the upstream relay. |
 
-Tokens must be ≥32 characters (`openssl rand -hex 32`).
+Static tokens must be ≥32 characters (`openssl rand -hex 32`).
+
+**OAuth 2.0 / OIDC** (optional, an alternative or addition to static tokens):
+the gateway acts as a Resource Server — it verifies a presented JWT's signature
+and claims, never issues tokens. Only asymmetric algorithms are accepted (the
+RS256→HS256 key-confusion class is rejected by construction), and it serves the
+RFC 9728 protected-resource metadata a spec-compliant MCP client uses to
+discover the issuer.
+
+| Variable | Purpose |
+|---|---|
+| `MCP_OAUTH_ISSUER` | OIDC issuer URL. Its discovery document and JWKS are fetched at startup and rotated automatically. Setting this enables OAuth. |
+| `MCP_OAUTH_AUDIENCE` | The `aud` tokens must carry (this gateway's identifier). Required with an issuer. |
+| `MCP_OAUTH_JWKS_FILE` | Use a static JWKS file (hot-reloaded on change) instead of issuer discovery — for air-gapped deployments. |
+| `MCP_OAUTH_IDENTITY_CLAIM` | Token claim to use as the audit identity (default `sub`). |
+| `MCP_OAUTH_REQUIRED_SCOPE` | Require this scope (`scope` string or `scp` array) in the token. |
+| `MCP_OAUTH_CA_ROOTS` | PEM file of CA roots for reaching a private issuer whose TLS cert is not in the system store. |
+| `MCP_TRUST_FORWARDED_HEADERS` | Honour `X-Forwarded-Proto`/`-Host` when building the metadata URL (off by default). |
 
 ```bash
 MCP_PORT=9090 \
