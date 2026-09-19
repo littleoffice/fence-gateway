@@ -1,11 +1,56 @@
-# To get started with Dependabot version updates, you'll need to specify which
-# package ecosystems to update and where the package manifests are located.
-# Please see the documentation for all configuration options:
-# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
-
 version: 2
+
+# Dependency updates, checked daily across all three ecosystems this repo has.
+# open-pull-requests-limit is set high so the default cap of 5 never suppresses
+# a PR. Security-update PRs are never subject to this limit; it only affects
+# routine version bumps.
 updates:
-  - package-ecosystem: "" # See documentation for possible values
-    directory: "/" # Location of package manifests
+  # Go modules. fence-gateway currently depends only on the standard library,
+  # so on most days there is nothing here to bump — but the entry is kept so
+  # that the moment a third-party dependency is added it is tracked from day
+  # one. Minor/patch bumps are grouped into a single PR (one CI run instead of
+  # N); every major bump still lands as its own PR, where per-dependency review
+  # actually matters. Remove the `groups:` block to go back to one PR per dep.
+  - package-ecosystem: gomod
+    directory: "/"
     schedule:
-      interval: "daily"
+      interval: daily
+    open-pull-requests-limit: 99
+    groups:
+      go-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+      - security
+
+  # Bumps the builder image in the Dockerfile — both the tag and the sha256
+  # digest — when a new Go patch release lands.
+  #
+  # Dependabot does NOT know that the `go` directive in go.mod must move with
+  # it. That drift is closed automatically by sync-go-version.yml, which
+  # rewrites the `go` directive to match the bumped base image and pushes it
+  # onto the PR so CI re-runs against the stdlib the image ships.
+  # pin-consistency.yml is retained as the secret-free invariant guard: it
+  # fails the PR on ANY mismatch, so if the auto-sync is ever skipped or its
+  # GO_SYNC_TOKEN is missing, the drift is still caught (failure mode is "back
+  # to a manual one-line edit", never "silently merged").
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 99
+    labels:
+      - dependencies
+      - security
+
+  # Keeps the pinned action SHAs in the workflows current.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: daily
+    open-pull-requests-limit: 99
+    labels:
+      - dependencies

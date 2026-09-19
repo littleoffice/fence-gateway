@@ -1,0 +1,52 @@
+# .github/workflows/sbom.yml
+#
+# Generates a source-level Software Bill of Materials (CycloneDX + SPDX) on
+# every release tag and attaches it to the GitHub Release. release.yml also
+# produces an image-level SBOM and attests it against the pushed image digest;
+# this one is a repo-scan complement so consumers who only have the source can
+# still get a parseable component list.
+
+name: sbom
+
+on:
+  push:
+    tags:
+      - 'v*'           # generate on every release tag
+  workflow_dispatch:   # allow manual trigger
+
+jobs:
+  sbom:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # needed to attach to GitHub release
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+
+      - name: Generate SBOM (CycloneDX JSON)
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          artifact-name: sbom.cdx.json
+          upload-artifact: true
+          upload-release-assets: true   # attaches to the GitHub release automatically
+
+      - name: Generate SBOM (SPDX JSON)
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: .
+          format: spdx-json
+          output-file: sbom.spdx.json
+          artifact-name: sbom.spdx.json
+          upload-artifact: true
+          upload-release-assets: true

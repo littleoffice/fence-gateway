@@ -1,0 +1,13 @@
+# Keep the build context minimal and deterministic. The build stamps the
+# version via -ldflags and sets -buildvcs=false, so .git is not needed; the
+# workflows/docs are never consumed by the build.
+.git
+.github
+.gitignore
+.dockerignore
+Dockerfile
+build.sh
+docs
+README.md
+LICENSE
+.golangci.yml

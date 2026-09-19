@@ -27,18 +27,21 @@ the relay's unmodified `fence.go`.
 
 | | |
 |---|---|
-| `fenceverify` | Parsing, canonicalisation, signature verification, key acquisition. No I/O in the hot path. |
-| `cmd/fence-verify` | CLI. Reads a fenced payload on stdin, exits 0/1/2. For CI gates and incident triage. |
-| `cmd/fence-gateway` | MCP proxy. Verifies tool results in transit and enforces a policy. |
+| `fenceverify` | Package: parsing, canonicalisation, signature verification, key acquisition. No I/O in the hot path. |
+| `fence-gateway` (module root, `package main`) | MCP proxy. Verifies tool results in transit and enforces a policy. This is the binary the `Dockerfile` builds. |
+| `interop` | Interop test package: verifies output from the relay's unmodified `fence.go`. |
+
+A standalone `fence-verify` CLI (read a fenced payload on stdin, exit 0/1/2, for
+CI gates and incident triage) is described in the paper's tooling and is a
+natural next addition on top of the `fenceverify` package, but is not yet
+implemented in this repository.
 
 ## Quick start
 
 ```bash
-go build ./cmd/...
-
-# One-shot check of a captured response
-curl -s localhost:8080/fence/public-key | jq -r .publicKey > key.b64
-./fence-verify -key "$(cat key.b64)" < response.txt
+# Build the gateway binary (module root). No dependencies beyond the Go stdlib.
+go build -o fence-gateway .
+./fence-gateway -version
 
 # In-line gateway (Claude Desktop config: point at this instead of the relay)
 ./fence-gateway \
@@ -47,6 +50,26 @@ curl -s localhost:8080/fence/public-key | jq -r .publicKey > key.b64
   -pin 5fb07c6222c503de \
   -policy reject
 ```
+
+### Container
+
+The gateway also ships as a minimal, reproducibly-built container image
+(`FROM scratch`, non-root, statically linked, two files in the runtime layer).
+It speaks JSON-RPC over stdio, so run it with an attached stdin (`-i`):
+
+```bash
+docker run --rm -i ghcr.io/littleoffice/promptfence-gateway:latest \
+  -upstream https://relay.internal:8080/mcp \
+  -policy reject -pin 5fb07c6222c503de
+
+# Secrets come from the runtime environment, never baked into the image:
+docker run --rm -i -e MCP_AUTH_TOKEN=… ghcr.io/littleoffice/promptfence-gateway:latest …
+```
+
+Build it yourself reproducibly with `./build.sh <version>` (podman), or see
+[`docs/supply-chain.md`](docs/supply-chain.md) for the full build-provenance,
+reproducibility, and release-attestation story, and
+[`docs/SECURITY.md`](docs/SECURITY.md) for vulnerability reporting.
 
 `-policy` is `reject` (Definition 4.5 rule 4 — drop the result), `annotate` (forward
 with a warning and `isError`), or `audit` (log only). Only `reject` actually stops an
