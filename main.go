@@ -79,7 +79,7 @@ func main() {
 	var (
 		upstream = flag.String("upstream", "http://127.0.0.1:8080/mcp", "upstream MCP endpoint")
 		keyURL   = flag.String("key-url", "", "fence public key endpoint (default: upstream origin + /fence/public-key)")
-		token    = flag.String("token", os.Getenv("MCP_AUTH_TOKEN"), "bearer token for upstream")
+		token    = flag.String("token", os.Getenv("UPSTREAM_MCP_TOKEN"), "bearer token the gateway presents to the upstream relay (env: UPSTREAM_MCP_TOKEN)")
 		policy   = flag.String("policy", "reject", "on verification failure: reject|annotate|audit")
 		pin      = flag.String("pin", "", "pinned fence key fingerprint (16 hex chars, from the relay's startup banner)")
 		tofu     = flag.Bool("tofu", false, "pin the first key seen and refuse later changes")
@@ -108,6 +108,14 @@ func main() {
 	case PolicyReject, PolicyAnnotate, PolicyAudit:
 	default:
 		fatal("unknown policy %q", cfg.policy)
+	}
+
+	// Parse HTTP-mode deployment config (MCP_PORT, downstream auth tokens, TLS)
+	// before doing any work, so a misconfiguration fails fast rather than after
+	// connecting upstream. Empty MCP_PORT means stdio mode.
+	hc, err := httpConfigFromEnv()
+	if err != nil {
+		fatal("%v", err)
 	}
 
 	ku := *keyURL
@@ -160,7 +168,15 @@ func main() {
 		fatal("register tools: %v", err)
 	}
 
-	// Serve MCP over stdio. Server.Run blocks until the client closes stdin.
+	// Serve. MCP_PORT selects the Streamable HTTP transport (remote); otherwise
+	// stdio (local subprocess). Both reuse the same verifying proxy server.
+	if hc.httpMode() {
+		if err := g.runHTTP(ctx, server, hc); err != nil {
+			fatal("gateway http: %v", err)
+		}
+		return
+	}
+	// Server.Run blocks until the client closes stdin.
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		fatal("gateway: %v", err)
 	}
