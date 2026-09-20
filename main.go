@@ -177,8 +177,8 @@ func main() {
 	// history under a single key and meters them from a single rate-limit
 	// bucket. That is invisible from either side at runtime; it belongs in the
 	// startup log where an operator will see it.
-	audit.Printf("upstream.auth mode=%s bootstrap=%t downstream_identities=%d",
-		ua.mode, ua.token != "", len(hc.authTokens))
+	audit.Printf("upstream.auth mode=%s bootstrap=%t downstream_identities=%d stateless=%t",
+		ua.mode, ua.token != "", len(hc.authTokens), hc.stateless)
 	if !ua.passthrough() && len(hc.authTokens) > 1 {
 		audit.Printf("upstream.auth.collapse identities=%d hint=%q", len(hc.authTokens),
 			"all downstream identities reach the relay as one: its per-caller fetch history "+

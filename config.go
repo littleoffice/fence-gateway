@@ -42,6 +42,15 @@ type httpConfig struct {
 	// X-Forwarded-Host when building the OAuth resource-metadata URL. Off by
 	// default — an unauthenticated caller must not get to nominate the issuer.
 	trustForwarded bool
+	// stateless is MCP_STATELESS, mirroring the relay's variable of the same
+	// name: the SDK skips session-ID issuance and treats every request as its
+	// own ephemeral session, so replicas can be load-balanced without sticky
+	// routing. Off by default, which is the session-per-client shape a single
+	// gateway wants. It must be set to the same value as the relay behind it:
+	// a stateless gateway in front of a stateful relay breaks the affinity
+	// chain in the middle, leaving the relay's session state stranded on
+	// whichever pod answered first.
+	stateless bool
 }
 
 // upstreamAuthMode selects which credential the gateway presents to the relay.
@@ -124,6 +133,7 @@ func httpConfigFromEnv() (httpConfig, error) {
 		tlsCert:        strings.TrimSpace(os.Getenv("MCP_TLS_CERT")),
 		tlsKey:         strings.TrimSpace(os.Getenv("MCP_TLS_KEY")),
 		trustForwarded: parseBool(os.Getenv("MCP_TRUST_FORWARDED_HEADERS")),
+		stateless:      parseBool(os.Getenv("MCP_STATELESS")),
 	}
 	if (c.tlsCert == "") != (c.tlsKey == "") {
 		return c, fmt.Errorf("MCP_TLS_CERT and MCP_TLS_KEY must be set together (got cert=%t key=%t)",

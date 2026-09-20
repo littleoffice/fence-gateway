@@ -28,9 +28,12 @@ import (
 // Bearer auth sits outermost so an unauthenticated request never reaches the
 // session machinery.
 func newHTTPHandler(server *mcp.Server, hc httpConfig, audit *log.Logger) http.Handler {
+	// Stateless mirrors the relay's MCP_STATELESS: no session-ID issuance, every
+	// request its own ephemeral session, so replicas need no sticky routing.
+	// It has to match the relay's setting — see httpConfig.stateless.
 	mcpHandler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return server },
-		nil,
+		&mcp.StreamableHTTPOptions{Stateless: hc.stateless},
 	)
 	// CrossOriginProtection rejects non-safe cross-origin browser requests
 	// (checked via Sec-Fetch-Site, or Origin vs Host). Non-browser clients —

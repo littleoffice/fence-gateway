@@ -159,6 +159,7 @@ are on by default.
 | `MCP_AUTH_TOKENS` | Comma-separated `identity:token` pairs (a small fleet). |
 | `MCP_AUTH_TOKEN_FILE` | File of tokens, one `identity:token` per line (`#` comments allowed). |
 | `MCP_TLS_CERT` / `MCP_TLS_KEY` | Serve HTTPS directly (both or neither). Omit to terminate TLS at a reverse proxy. |
+| `MCP_STATELESS` | No session-ID issuance, so replicas need no sticky routing. Must match the relay's setting — see below. |
 | `UPSTREAM_MCP_AUTH_MODE` | `static` (default) or `passthrough` — which credential tool calls carry upstream. See below. |
 | `UPSTREAM_MCP_TOKEN` | The gateway's own bootstrap credential for the relay. One per gateway, not one per caller. |
 | `UPSTREAM_MCP_TOKEN_FILE` | The same credential read from a mounted file. Set one of the two, not both. |
@@ -224,6 +225,12 @@ Because pass-through forwards whatever header the client sent, a JWT rides
 through untouched: point both the gateway and the relay at the same OIDC issuer
 and identity flows end to end in `sub` with no shared secrets at all, provided
 the token's `aud` satisfies both sides' `MCP_OAUTH_AUDIENCE`.
+
+`MCP_STATELESS` mirrors the relay's variable of the same name — no session-ID
+issuance, every request its own ephemeral session, so replicas need no sticky
+routing. **Set it the same on both.** A stateless gateway in front of a
+stateful relay breaks the affinity chain in the middle, leaving the relay's
+session state stranded on whichever replica answered first.
 
 ### Container
 
