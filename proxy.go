@@ -17,6 +17,8 @@ import (
 // stdio server, and later transports (Streamable HTTP) reuse it unchanged.
 type gateway struct {
 	cfg   config
+	hc    httpConfig
+	ua    upstreamAuth
 	keys  fv.KeySource
 	audit *log.Logger
 	up    *mcp.ClientSession
@@ -37,6 +39,33 @@ func (g *gateway) registerTools(ctx context.Context, server *mcp.Server) error {
 		}
 		name := tool.Name
 		server.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			// Who is calling. Extra is nil over stdio, where there is no HTTP
+			// request and the single local client needs no attribution.
+			var authz string
+			if req.Extra != nil {
+				authz = req.Extra.Header.Get("Authorization")
+			}
+			identity := g.hc.identityFor(ctx, authz)
+
+			if g.ua.passthrough() {
+				if authz == "" {
+					// Fail closed. Falling back to the bootstrap credential
+					// here would put this call in the relay's bucket for
+					// every other caller — the collapse passthrough exists to
+					// prevent — and it would do so silently.
+					g.audit.Printf("upstream.credential.missing tool=%q", name)
+					return &mcp.CallToolResult{
+						IsError: true,
+						Content: []mcp.Content{&mcp.TextContent{
+							Text: "Tool call blocked by the fence gateway: the call carried no " +
+								"credential to forward to the upstream relay, and the gateway does " +
+								"not substitute one. See the gateway audit log for detail.",
+						}},
+					}, nil
+				}
+				ctx = withUpstreamCredential(ctx, authz)
+			}
+
 			// Forward the raw arguments verbatim. CallToolParamsRaw.Arguments
 			// is json.RawMessage, which re-marshals to the exact bytes the
 			// client sent, so no argument is reinterpreted in transit.
@@ -49,10 +78,10 @@ func (g *gateway) registerTools(ctx context.Context, server *mcp.Server) error {
 				// as a Go error, which the SDK surfaces as a protocol error to
 				// the client — the honest signal that the call did not reach a
 				// verified result.
-				g.audit.Printf("upstream.error tool=%q err=%q", name, err)
+				g.audit.Printf("upstream.error tool=%q identity=%q err=%q", name, identity, err)
 				return nil, err
 			}
-			return g.verify(ctx, name, res), nil
+			return g.verify(ctx, name, identity, res), nil
 		})
 		n++
 	}
@@ -63,12 +92,12 @@ func (g *gateway) registerTools(ctx context.Context, server *mcp.Server) error {
 // verify inspects the text content of a tool result, verifies any fences it
 // carries, and applies the configured policy. It is the SDK-typed counterpart
 // of the checker described in arXiv:2511.19727 §4.5.
-func (g *gateway) verify(ctx context.Context, tool string, res *mcp.CallToolResult) *mcp.CallToolResult {
+func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.CallToolResult) *mcp.CallToolResult {
 	keys, err := g.keys.Keys(ctx)
 	if err != nil || len(keys) == 0 {
-		g.audit.Printf("fence.verify.nokey tool=%q err=%q", tool, err)
+		g.audit.Printf("fence.verify.nokey tool=%q identity=%q err=%q", tool, identity, err)
 		if g.cfg.policy == PolicyReject {
-			return g.reject("fence verification unavailable: no public key")
+			return g.reject(identity, "fence verification unavailable: no public key")
 		}
 		return res
 	}
@@ -102,7 +131,8 @@ func (g *gateway) verify(ctx context.Context, tool string, res *mcp.CallToolResu
 		}
 
 		for _, rj := range r.Rejections {
-			g.audit.Printf("fence.rejected tool=%q offset=%d reason=%q snippet=%q", tool, rj.Offset, rj.Reason, rj.Snippet)
+			g.audit.Printf("fence.rejected tool=%q identity=%q offset=%d reason=%q snippet=%q",
+				tool, identity, rj.Offset, rj.Reason, rj.Snippet)
 			problems = append(problems, rj.Reason)
 		}
 		if len(r.Fences) == 0 {
@@ -110,15 +140,15 @@ func (g *gateway) verify(ctx context.Context, tool string, res *mcp.CallToolResu
 			continue
 		}
 		for _, f := range r.Fences {
-			g.audit.Printf("fence.verified tool=%q rating=%s type=%s source=%q nonce=%s bytes=%d",
-				tool, f.Rating, f.Type, f.Source, f.Nonce, len(f.Content))
+			g.audit.Printf("fence.verified tool=%q identity=%q rating=%s type=%s source=%q nonce=%s bytes=%d",
+				tool, identity, f.Rating, f.Type, f.Source, f.Nonce, len(f.Content))
 		}
 		if g.cfg.requireAll && len(r.UnsignedRegions) > 0 {
 			// The awareness preamble lands here. It is unsigned, it is the
 			// text telling the model to distrust the fenced content, and
 			// nothing binds it to the fence it describes.
-			g.audit.Printf("fence.unsigned_text tool=%q regions=%d first=%.80q",
-				tool, len(r.UnsignedRegions), r.UnsignedRegions[0])
+			g.audit.Printf("fence.unsigned_text tool=%q identity=%q regions=%d first=%.80q",
+				tool, identity, len(r.UnsignedRegions), r.UnsignedRegions[0])
 			problems = append(problems, fmt.Sprintf("%d unsigned region(s) outside the fence", len(r.UnsignedRegions)))
 		}
 		verified++
@@ -128,7 +158,7 @@ func (g *gateway) verify(ctx context.Context, tool string, res *mcp.CallToolResu
 		return res
 	}
 	if len(problems) == 0 {
-		g.audit.Printf("fence.ok tool=%q blocks=%d", tool, verified)
+		g.audit.Printf("fence.ok tool=%q identity=%q blocks=%d", tool, identity, verified)
 		if g.cfg.stripSig {
 			return stripSignatures(res)
 		}
@@ -137,7 +167,7 @@ func (g *gateway) verify(ctx context.Context, tool string, res *mcp.CallToolResu
 
 	switch g.cfg.policy {
 	case PolicyReject:
-		return g.reject(strings.Join(problems, "; "))
+		return g.reject(identity, strings.Join(problems, "; "))
 	case PolicyAnnotate:
 		return annotate(res, strings.Join(problems, "; "))
 	default:
@@ -148,8 +178,8 @@ func (g *gateway) verify(ctx context.Context, tool string, res *mcp.CallToolResu
 // reject replaces the result with an error result. The failure detail is
 // deliberately terse and never echoes attacker-controlled text: the audit log
 // is where the snippet goes, because that is read by a human, not a model.
-func (g *gateway) reject(reason string) *mcp.CallToolResult {
-	g.audit.Printf("fence.policy.reject reason=%q", reason)
+func (g *gateway) reject(identity, reason string) *mcp.CallToolResult {
+	g.audit.Printf("fence.policy.reject identity=%q reason=%q", identity, reason)
 	return &mcp.CallToolResult{
 		IsError: true,
 		Content: []mcp.Content{&mcp.TextContent{

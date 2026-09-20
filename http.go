@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os/signal"
@@ -26,7 +27,7 @@ import (
 // library's net/http.CrossOriginProtection — the same defence the relay gets.
 // Bearer auth sits outermost so an unauthenticated request never reaches the
 // session machinery.
-func newHTTPHandler(server *mcp.Server, hc httpConfig) http.Handler {
+func newHTTPHandler(server *mcp.Server, hc httpConfig, audit *log.Logger) http.Handler {
 	mcpHandler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return server },
 		nil,
@@ -38,7 +39,7 @@ func newHTTPHandler(server *mcp.Server, hc httpConfig) http.Handler {
 	protected := http.NewCrossOriginProtection().Handler(mcpHandler)
 
 	mux := http.NewServeMux()
-	mux.Handle("/", requireAuth(hc, protected))
+	mux.Handle("/", requireAuth(hc, audit, protected))
 	// RFC 9728 protected-resource metadata — unauthenticated by design (a client
 	// needs it *before* it can obtain a token), registered only when OAuth is on.
 	// Its specific path takes routing precedence over the "/" MCP handler.
@@ -55,7 +56,7 @@ func newHTTPHandler(server *mcp.Server, hc httpConfig) http.Handler {
 // neither gets 401; when OAuth is enabled the challenge points at the
 // protected-resource metadata so a spec-compliant client can discover the
 // issuer.
-func requireAuth(hc httpConfig, next http.Handler) http.Handler {
+func requireAuth(hc httpConfig, audit *log.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authz := r.Header.Get("Authorization")
 		staticOn := len(hc.authTokens) > 0
@@ -93,6 +94,13 @@ func requireAuth(hc httpConfig, next http.Handler) http.Handler {
 		} else {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="mcp"`)
 		}
+		// One line per refusal, so a run of them is visible without turning on
+		// anything. The offered header is never logged: a near-miss guess is
+		// still a credential, and the audit log is not the place to collect
+		// them.
+		if audit != nil {
+			audit.Printf("auth.denied method=%s path=%s remote=%s", r.Method, r.URL.Path, remoteHost(r))
+		}
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	})
 }
@@ -117,7 +125,7 @@ func (g *gateway) runHTTP(ctx context.Context, server *mcp.Server, hc httpConfig
 
 	srv := &http.Server{
 		Addr:    ":" + hc.port,
-		Handler: g.logRequests(newHTTPHandler(server, hc)),
+		Handler: g.logRequests(newHTTPHandler(server, hc, g.audit)),
 		// ReadHeaderTimeout guards against slow-header (Slowloris) clients.
 		// WriteTimeout is 0: the SDK manages SSE streams with their own
 		// deadlines, and a server-level write deadline would truncate them.
