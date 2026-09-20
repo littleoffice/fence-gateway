@@ -32,13 +32,22 @@ type httpConfig struct {
 	// tlsCert / tlsKey are MCP_TLS_CERT / MCP_TLS_KEY. Both or neither.
 	tlsCert string
 	tlsKey  string
+	// oauth is the compiled OAuth/OIDC verifier, or nil when OAuth is off. It
+	// is populated in main() (not here) because issuer-discovery mode makes a
+	// network call, which config parsing and tests should not.
+	oauth *oauthSettings
+	// trustForwarded is MCP_TRUST_FORWARDED_HEADERS: honour X-Forwarded-Proto /
+	// X-Forwarded-Host when building the OAuth resource-metadata URL. Off by
+	// default — an unauthenticated caller must not get to nominate the issuer.
+	trustForwarded bool
 }
 
 func httpConfigFromEnv() (httpConfig, error) {
 	c := httpConfig{
-		port:    strings.TrimSpace(os.Getenv("MCP_PORT")),
-		tlsCert: strings.TrimSpace(os.Getenv("MCP_TLS_CERT")),
-		tlsKey:  strings.TrimSpace(os.Getenv("MCP_TLS_KEY")),
+		port:           strings.TrimSpace(os.Getenv("MCP_PORT")),
+		tlsCert:        strings.TrimSpace(os.Getenv("MCP_TLS_CERT")),
+		tlsKey:         strings.TrimSpace(os.Getenv("MCP_TLS_KEY")),
+		trustForwarded: parseBool(os.Getenv("MCP_TRUST_FORWARDED_HEADERS")),
 	}
 	if (c.tlsCert == "") != (c.tlsKey == "") {
 		return c, fmt.Errorf("MCP_TLS_CERT and MCP_TLS_KEY must be set together (got cert=%t key=%t)",
@@ -122,6 +131,16 @@ func splitIdentityToken(s string) (identity, token string) {
 		return strings.TrimSpace(s[:i]), s[i+1:]
 	}
 	return "", s
+}
+
+// parseBool reads a permissive boolean: 1/true/yes/on (any case) are true,
+// everything else — including empty — is false.
+func parseBool(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 // splitCSV splits on commas and drops empty fields after trimming.

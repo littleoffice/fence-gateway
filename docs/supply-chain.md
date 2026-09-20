@@ -52,11 +52,13 @@ and a small, pure-Go transitive set. The authoritative list is `go.mod` /
 `go.sum`; the version numbers here are point-in-time and `go.mod` wins on any
 disagreement.
 
-### Direct dependency
+### Direct dependencies
 
 | Module | Purpose |
 |---|---|
-| `github.com/modelcontextprotocol/go-sdk` | The official Model Context Protocol SDK — JSON-RPC framing, the stdio and Streamable HTTP transports, client and server sessions. The gateway is an MCP client to the upstream relay and an MCP server to the downstream client; the SDK owns both transports. Same SDK, same major version the relay pins (v1.8.0). |
+| `github.com/modelcontextprotocol/go-sdk` | The official Model Context Protocol SDK — JSON-RPC framing, the stdio and Streamable HTTP transports, client and server sessions. The gateway is an MCP client to the upstream relay and an MCP server to the downstream client; the SDK owns both transports. Same SDK, same version the relay pins (v1.8.0). |
+| `github.com/coreos/go-oidc/v3` | Optional OAuth 2.0 / OIDC verification of downstream clients in HTTP mode (`MCP_OAUTH_*`): OIDC discovery, the auto-rotating JWKS cache, and JWT signature/claims validation. Inert unless `MCP_OAUTH_ISSUER` is set. Same library and major version the relay pins. |
+| `github.com/go-jose/go-jose/v4` | JOSE primitives (JWS parsing, signature verification, JWKS types) under `go-oidc`, and used directly to verify against a static `MCP_OAUTH_JWKS_FILE`. Same as the relay. |
 
 ### Transitive dependencies
 
@@ -76,9 +78,11 @@ links Rust libraries for document extraction; the gateway links only Go. Every
 dependency is a Go module verified through `go.sum` and the Go checksum database.
 
 What a reviewer trusts, then, is: the first-party Go source in this repository
-(the `fenceverify` package and the proxy in `main.go` / `proxy.go`), the MCP SDK
-and its pinned transitive set, and the Go standard library and toolchain (pinned
-by the builder image digest and the `go` directive in `go.mod`).
+(the `fenceverify` package, the proxy in `main.go` / `proxy.go`, and the HTTP
+transport and auth in `http.go` / `config.go` / `oauth.go`), the three direct
+dependencies and their pinned transitive set, and the Go standard library and
+toolchain (pinned by the builder image digest and the `go` directive in
+`go.mod`).
 
 ## Build provenance
 
