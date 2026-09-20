@@ -1,0 +1,48 @@
+# Runs fence-gateway next to an existing mcp-searxng-relay stack, on the same
+# container network so it can reach the relay by name. The gateway is the
+# component clients connect to; it verifies every tool result before returning
+# it.
+#
+# The relay's own podman stack (mcp-searxng-relay/deploy/podman) creates a
+# network named "edge"; podman/compose prefixes it with the project (directory)
+# name, so the real name is usually "<reldir>_edge". Find it with:
+#   podman network ls
+# then set it as `name:` under the `relay` network below. Alternatively remove
+# `external: true` to let this stack own the network and attach the relay to it.
+services:
+  fence-gateway:
+    image: ghcr.io/littleoffice/promptfence-gateway:latest # pin a tag/digest in prod
+    container_name: fence-gateway
+    env_file: ./envs/.fence-gateway.env
+    # Verification behaviour is set by flags; deployment by the env file above.
+    command:
+      - "-upstream"
+      # The relay container's MCP endpoint. The relay's podman env sets
+      # MCP_PORT=3000, so it listens on :3000 inside the network.
+      - "http://mcp-searxng-relay:3000/mcp"
+      - "-policy"
+      - "reject"
+      # Uncomment to pin the relay's fence-key fingerprint (needs a persistent
+      # FENCE_SIGNING_KEY on the relay; read it from the relay's startup banner):
+      # - "-pin"
+      # - "5fb07c6222c503de"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    stdin_open: false
+    ports:
+      # host:container — expose the gateway's MCP port (8080) to clients. Put a
+      # TLS-terminating reverse proxy in front for anything beyond localhost, or
+      # set MCP_TLS_CERT/MCP_TLS_KEY in the env file to serve HTTPS directly.
+      - "9090:8080"
+    volumes:
+      # CA roots so the gateway can verify TLS to an HTTPS upstream/key endpoint.
+      - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro
+    networks: [relay]
+    logging: { driver: json-file, options: { max-size: 1m, max-file: "1" } }
+    restart: unless-stopped
+
+networks:
+  relay:
+    external: true
+    name: CHANGEME_relay_stack_network # e.g. podman_edge — see the header above

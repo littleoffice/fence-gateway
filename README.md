@@ -198,6 +198,10 @@ reproducibility, and release-attestation story,
 [`docs/conformance.md`](docs/conformance.md) for how the gateway maps onto the
 paper's Security Gateway (§4.5, §7.4.3).
 
+To run the gateway in the same namespace / network as the relay, see
+[`deploy/`](deploy/) — Kubernetes and Podman manifests that front the relay
+with the gateway.
+
 `-policy` is `reject` (Definition 4.5 rule 4 — drop the result), `annotate` (forward
 with a warning and `isError`), or `audit` (log only). Only `reject` actually stops an
 attack; the other two describe one.

@@ -7,6 +7,7 @@
 .dockerignore
 Dockerfile
 build.sh
+deploy
 docs
 README.md
 LICENSE

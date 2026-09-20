@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: fence-gateway
+  labels:
+    app: fence-gateway
+spec:
+  # ClusterIP: the gateway is the component clients connect to, but TLS
+  # termination is expected at an Ingress / gateway layer (see
+  # ingress.example.yaml). The pod speaks plain HTTP unless in-pod TLS is
+  # enabled. To expose it directly without an Ingress, change this to
+  # LoadBalancer or NodePort AND put a TLS terminator in front.
+  type: ClusterIP
+  selector:
+    app: fence-gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

@@ -1,0 +1,40 @@
+# Example Ingress that terminates TLS in front of the gateway using
+# cert-manager. This is the recommended way to expose the gateway to external
+# MCP clients: the pod keeps speaking plain HTTP and TLS is terminated here.
+#
+# Like secret.example.yaml, this file is deliberately NOT listed in
+# kustomization.yaml — the host, Ingress class, and Issuer are cluster-specific.
+# Copy it to ingress.yaml, edit the marked fields, and apply it. If you
+# terminate TLS at a gateway you already run (an external LB, a service mesh,
+# Gateway API), you do not need this file.
+#
+# Prerequisites: cert-manager, a (Cluster)Issuer, and an Ingress controller.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: fence-gateway
+  labels:
+    app: fence-gateway
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        # CHANGE ME — the public hostname MCP clients connect to.
+        - gateway.example.com
+      secretName: fence-gateway-tls
+  rules:
+    # CHANGE ME — must match the tls host above.
+    - host: gateway.example.com
+      http:
+        paths:
+          # The gateway serves the MCP endpoint at "/".
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: fence-gateway
+                port:
+                  number: 8080

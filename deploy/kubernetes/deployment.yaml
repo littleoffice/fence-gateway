@@ -1,0 +1,142 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fence-gateway
+  labels:
+    app: fence-gateway
+spec:
+  # The gateway is a stateless verifying proxy — it holds no session state of
+  # its own (the upstream relay owns MCP sessions), so it scales horizontally
+  # without the session caveats the relay has. Start at 1; raise freely.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fence-gateway
+  template:
+    metadata:
+      labels:
+        app: fence-gateway
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: fence-gateway
+          # Pin a released tag or, better, a digest in production rather than
+          # :latest — rolling restarts need a known image. Images are published
+          # to GHCR by the release workflow on a v* tag; see the repo README.
+          image: ghcr.io/littleoffice/promptfence-gateway:latest
+          imagePullPolicy: IfNotPresent
+          # Verification behaviour is set by FLAGS (args), deployment by env.
+          #   -upstream : the relay's in-cluster MCP endpoint. The fence public
+          #               key is fetched from the same origin (…/fence/public-key).
+          #   -policy   : reject is the only setting that actually stops an
+          #               attack; annotate/audit only describe one.
+          #   -pin      : optional — see the commented block below.
+          args:
+            - "-upstream"
+            # CHANGE ME to your relay Service. The shape below assumes an
+            # mcp-searxng-relay Service named "mcp-searxng" on port 8080 in the
+            # same namespace. Cross-namespace: mcp-searxng.<ns>.svc.cluster.local.
+            - "http://mcp-searxng:8080/mcp"
+            - "-policy"
+            - "reject"
+            # Pin the relay's fence-key fingerprint so a substituted or
+            # impersonated relay is detected. Requires the relay to run a
+            # PERSISTENT signing key (FENCE_SIGNING_KEY*) — otherwise it mints a
+            # new key per restart and the pin must be updated each time. Read the
+            # fingerprint from the relay's startup banner. Left off by default so
+            # the gateway tolerates the relay's per-restart rotation.
+            # - "-pin"
+            # - "5fb07c6222c503de"
+          env:
+            - name: MCP_PORT
+              value: "8080"
+            # Downstream client bearer tokens, mounted from the fence-gateway-auth
+            # Secret (see secret.example.yaml). Each line is `identity:token`.
+            - name: MCP_AUTH_TOKEN_FILE
+              value: /etc/gateway-auth/tokens
+            # The bearer token the gateway presents TO the relay — a different
+            # secret from the client tokens above, in the opposite direction.
+            # Omit this env entry (and the Secret key) if the relay needs no auth.
+            - name: UPSTREAM_MCP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: fence-gateway-auth
+                  key: upstream-token
+            # ── In-pod TLS (optional) ──────────────────────────────────────
+            # Recommended shape terminates TLS at an Ingress (see
+            # ingress.example.yaml) and leaves this pod on plain HTTP. To serve
+            # HTTPS directly instead, mount a cert Secret at /etc/gateway-tls
+            # (e.g. a cert-manager Certificate) and uncomment — both or neither:
+            # - name: MCP_TLS_CERT
+            #   value: /etc/gateway-tls/tls.crt
+            # - name: MCP_TLS_KEY
+            #   value: /etc/gateway-tls/tls.key
+            # ── OAuth 2.0 / OIDC (optional) ────────────────────────────────
+            # Verify client JWTs from your IdP instead of / alongside the static
+            # tokens above. Setting MCP_OAUTH_ISSUER enables it; MCP_OAUTH_AUDIENCE
+            # is then required. See the repo README, "Running remotely".
+            # - name: MCP_OAUTH_ISSUER
+            #   value: https://idp.example.com/realms/main
+            # - name: MCP_OAUTH_AUDIENCE
+            #   value: https://gateway.example.com
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: auth
+              mountPath: /etc/gateway-auth
+              readOnly: true
+            # Manual-cert in-pod TLS mounts the cert Secret here (see MCP_TLS_CERT):
+            # - name: tls
+            #   mountPath: /etc/gateway-tls
+            #   readOnly: true
+          # TCP probes: the gateway is a stdio/HTTP MCP proxy and currently
+          # exposes no /health endpoint (that is a planned addition), so both
+          # probes ask "is the process listening". Once a /health endpoint
+          # lands, switch the readinessProbe to an httpGet on it.
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              # No CPU limit on purpose — Go's scheduler does not respond well to
+              # CPU throttling and this is a low base-load proxy. Memory is
+              # capped; the gateway holds little beyond the runtime.
+              memory: 128Mi
+      volumes:
+        - name: auth
+          secret:
+            secretName: fence-gateway-auth
+            # 0400 = readable only by the container's UID. With runAsUser:1001
+            # above, the token file is unreadable by anything else.
+            defaultMode: 0400
+        # Certificate Secret for manual-cert in-pod TLS (see the tls mount):
+        # - name: tls
+        #   secret:
+        #     secretName: fence-gateway-tls
+        #     defaultMode: 0400
