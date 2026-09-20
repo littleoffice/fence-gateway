@@ -79,7 +79,7 @@ func main() {
 	var (
 		upstream = flag.String("upstream", "http://127.0.0.1:8080/mcp", "upstream MCP endpoint")
 		keyURL   = flag.String("key-url", "", "fence public key endpoint (default: upstream origin + /fence/public-key)")
-		token    = flag.String("token", os.Getenv("UPSTREAM_MCP_TOKEN"), "bearer token the gateway presents to the upstream relay (env: UPSTREAM_MCP_TOKEN)")
+		token    = flag.String("token", os.Getenv("UPSTREAM_MCP_TOKEN"), "the gateway's own bootstrap credential for the relay; in passthrough mode no tool call uses it (env: UPSTREAM_MCP_TOKEN, UPSTREAM_MCP_TOKEN_FILE)")
 		policy   = flag.String("policy", "reject", "on verification failure: reject|annotate|audit")
 		pin      = flag.String("pin", "", "pinned fence key fingerprint (16 hex chars, from the relay's startup banner)")
 		tofu     = flag.Bool("tofu", false, "pin the first key seen and refuse later changes")

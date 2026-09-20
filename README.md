@@ -125,10 +125,11 @@ Configuration splits cleanly: **verification behavior is set by flags**
 (`-upstream`, `-policy`, `-pin`, `-max-age`, `-strip-signature`,
 `-require-all-fenced`, `-paper-scheme`, `-tofu`, `-key-url`), and
 **deployment is set by environment variables** (mirroring the relay's names).
-The token the gateway presents *to the upstream relay* is `UPSTREAM_MCP_TOKEN`
-(or `-token`); the tokens clients present *to the gateway* in HTTP mode are the
-`MCP_AUTH_TOKEN*` family below — two different directions, two different
-secrets.
+The tokens clients present *to the gateway* in HTTP mode are the
+`MCP_AUTH_TOKEN*` family below. What the gateway presents *to the relay*
+depends on `UPSTREAM_MCP_AUTH_MODE`: each caller's own credential, forwarded,
+or the gateway's `UPSTREAM_MCP_TOKEN` for everyone. Which one you want is not a
+detail — see [Which credential reaches the relay](#which-credential-reaches-the-relay).
 
 ## Quick start (stdio, local)
 
