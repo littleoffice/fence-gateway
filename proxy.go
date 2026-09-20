@@ -105,10 +105,24 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 	v := &fv.Verifier{Keys: keys, Scheme: g.cfg.scheme, MaxAge: g.cfg.maxAge, RequireNonce: true}
 
 	var problems []string
-	verified, total := 0, 0
+	verified, total, unfenced := 0, 0, 0
 	for _, c := range res.Content {
 		tc, ok := c.(*mcp.TextContent)
-		if !ok || !strings.Contains(tc.Text, "<sec:fence") {
+		if !ok {
+			// Non-text content (images, embedded resources) carries no fence
+			// and is not counted here. It is forwarded unverified, which is a
+			// wider gap than this function closes; see the note on
+			// requireAll below.
+			continue
+		}
+		if !strings.Contains(tc.Text, "<sec:fence") {
+			// A whole text block with no fence in it. Counted across the
+			// result rather than handled here, because the interesting case
+			// — a result in which NO block carries a fence — never reaches
+			// the per-fence accounting below at all.
+			if strings.TrimSpace(tc.Text) != "" {
+				unfenced++
+			}
 			continue
 		}
 		total++
@@ -154,7 +168,24 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 		verified++
 	}
 
-	if total == 0 {
+	// Text blocks that carry no fence at all. The per-fence loop above cannot
+	// see these — it skips them — so a result in which nothing is fenced used
+	// to leave `problems` empty and be forwarded verbatim, which is precisely
+	// the case -require-all-fenced exists to catch.
+	//
+	// This is deliberately conditioned on unfenced *text*, not on the absence
+	// of a fence: the relay answers a zero-result search with a bare "No
+	// results found." and a `searxng_read_url` on an image with ImageContent
+	// and no text at all. Neither is an attack, and neither should be blocked
+	// by default.
+	if g.cfg.requireAll && unfenced > 0 {
+		g.audit.Printf("fence.unfenced_block tool=%q identity=%q blocks=%d fences=%d",
+			tool, identity, unfenced, total)
+		problems = append(problems,
+			fmt.Sprintf("%d text block(s) carrying no fence at all", unfenced))
+	}
+
+	if total == 0 && len(problems) == 0 {
 		return res
 	}
 	if len(problems) == 0 {
