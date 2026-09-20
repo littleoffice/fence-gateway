@@ -125,10 +125,11 @@ Configuration splits cleanly: **verification behavior is set by flags**
 (`-upstream`, `-policy`, `-pin`, `-max-age`, `-strip-signature`,
 `-require-all-fenced`, `-paper-scheme`, `-tofu`, `-key-url`), and
 **deployment is set by environment variables** (mirroring the relay's names).
-The token the gateway presents *to the upstream relay* is `UPSTREAM_MCP_TOKEN`
-(or `-token`); the tokens clients present *to the gateway* in HTTP mode are the
-`MCP_AUTH_TOKEN*` family below — two different directions, two different
-secrets.
+The tokens clients present *to the gateway* in HTTP mode are the
+`MCP_AUTH_TOKEN*` family below. What the gateway presents *to the relay*
+depends on `UPSTREAM_MCP_AUTH_MODE`: each caller's own credential, forwarded,
+or the gateway's `UPSTREAM_MCP_TOKEN` for everyone. Which one you want is not a
+detail — see [Which credential reaches the relay](#which-credential-reaches-the-relay).
 
 ## Quick start (stdio, local)
 
@@ -159,7 +160,10 @@ are on by default.
 | `MCP_AUTH_TOKENS` | Comma-separated `identity:token` pairs (a small fleet). |
 | `MCP_AUTH_TOKEN_FILE` | File of tokens, one `identity:token` per line (`#` comments allowed). |
 | `MCP_TLS_CERT` / `MCP_TLS_KEY` | Serve HTTPS directly (both or neither). Omit to terminate TLS at a reverse proxy. |
-| `UPSTREAM_MCP_TOKEN` | Bearer token the gateway presents to the upstream relay. |
+| `MCP_STATELESS` | No session-ID issuance, so replicas need no sticky routing. Must match the relay's setting — see below. |
+| `UPSTREAM_MCP_AUTH_MODE` | `static` (default) or `passthrough` — which credential tool calls carry upstream. See below. |
+| `UPSTREAM_MCP_TOKEN` | The gateway's own bootstrap credential for the relay. One per gateway, not one per caller. |
+| `UPSTREAM_MCP_TOKEN_FILE` | The same credential read from a mounted file. Set one of the two, not both. |
 
 Static tokens must be ≥32 characters (`openssl rand -hex 32`).
 
@@ -187,6 +191,47 @@ MCP_TLS_CERT=/etc/tls/tls.crt MCP_TLS_KEY=/etc/tls/tls.key \
 UPSTREAM_MCP_TOKEN="$RELAY_TOKEN" \
 ./fence-gateway -upstream https://relay.internal:8080/mcp -policy reject -pin 5fb07c6222c503de
 ```
+
+### Which credential reaches the relay
+
+The relay derives caller identity *only* from the token it receives, and files
+per-caller state under `identity | session` — its fetch history
+(`searxng_session_sources`) and its rate-limit buckets both hang off that key.
+A gateway that authenticates a client and then presents one credential of its
+own for everybody collapses that key: two callers behind it share a history and
+a rate limit, and the first can read the URLs the second fetched. `UPSTREAM_MCP_AUTH_MODE`
+decides which of those two things happens.
+
+| Value | Tool calls carry | Use when |
+|---|---|---|
+| `static` (default) | the gateway's own credential | one caller, or callers you are content to treat as one |
+| `passthrough` | the calling client's own `Authorization`, forwarded verbatim | more than one caller shares the gateway |
+
+Pass-through needs HTTP mode (stdio has no downstream credential to forward)
+and keeps the relay unchanged: the tokens in the relay's table are the same
+values the clients already present to the gateway, so it resolves each caller
+to its own identity exactly as it does without a gateway in the way. A call
+that arrives with nothing to forward is refused rather than sent under the
+gateway's credential — falling back would quietly restore the collapse.
+
+`UPSTREAM_MCP_TOKEN` (or `UPSTREAM_MCP_TOKEN_FILE`, for orchestrators that
+mount secrets rather than inject them) is then the **bootstrap credential**:
+one per gateway, never one per caller. It authenticates `initialize` and
+`tools/list` at startup — both happen before any client exists — and the
+housekeeping the SDK does with no caller attached: ping, the GET event stream,
+session DELETE. No tool call uses it in pass-through mode. So a deployment with
+N callers holds N + 1 secrets, not 2N.
+
+Because pass-through forwards whatever header the client sent, a JWT rides
+through untouched: point both the gateway and the relay at the same OIDC issuer
+and identity flows end to end in `sub` with no shared secrets at all, provided
+the token's `aud` satisfies both sides' `MCP_OAUTH_AUDIENCE`.
+
+`MCP_STATELESS` mirrors the relay's variable of the same name — no session-ID
+issuance, every request its own ephemeral session, so replicas need no sticky
+routing. **Set it the same on both.** A stateless gateway in front of a
+stateful relay breaks the affinity chain in the middle, leaving the relay's
+session state stranded on whichever replica answered first.
 
 ### Container
 

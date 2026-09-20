@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -65,7 +66,6 @@ const (
 
 type config struct {
 	upstream   string
-	token      string
 	policy     Policy
 	pin        string
 	tofu       bool
@@ -79,7 +79,7 @@ func main() {
 	var (
 		upstream = flag.String("upstream", "http://127.0.0.1:8080/mcp", "upstream MCP endpoint")
 		keyURL   = flag.String("key-url", "", "fence public key endpoint (default: upstream origin + /fence/public-key)")
-		token    = flag.String("token", os.Getenv("UPSTREAM_MCP_TOKEN"), "bearer token the gateway presents to the upstream relay (env: UPSTREAM_MCP_TOKEN)")
+		token    = flag.String("token", os.Getenv("UPSTREAM_MCP_TOKEN"), "the gateway's own bootstrap credential for the relay; in passthrough mode no tool call uses it (env: UPSTREAM_MCP_TOKEN, UPSTREAM_MCP_TOKEN_FILE)")
 		policy   = flag.String("policy", "reject", "on verification failure: reject|annotate|audit")
 		pin      = flag.String("pin", "", "pinned fence key fingerprint (16 hex chars, from the relay's startup banner)")
 		tofu     = flag.Bool("tofu", false, "pin the first key seen and refuse later changes")
@@ -97,7 +97,7 @@ func main() {
 	}
 
 	cfg := config{
-		upstream: *upstream, token: *token, policy: Policy(*policy),
+		upstream: *upstream, policy: Policy(*policy),
 		pin: *pin, tofu: *tofu, maxAge: *maxAge,
 		stripSig: *stripSig, requireAll: *reqAll,
 	}
@@ -116,6 +116,16 @@ func main() {
 	hc, err := httpConfigFromEnv()
 	if err != nil {
 		fatal("%v", err)
+	}
+
+	// How the gateway authenticates to the relay, and with whose credential.
+	ua, err := upstreamAuthFromEnv(*token)
+	if err != nil {
+		fatal("%v", err)
+	}
+	if ua.passthrough() && !hc.httpMode() {
+		fatal("UPSTREAM_MCP_AUTH_MODE=passthrough requires HTTP mode: set MCP_PORT, "+
+			"or leave the mode at %q (stdio carries no downstream credential to forward)", upstreamAuthStatic)
 	}
 
 	ku := *keyURL
@@ -159,7 +169,22 @@ func main() {
 		}
 	}
 
-	g := &gateway{cfg: cfg, keys: keys, audit: audit}
+	g := &gateway{cfg: cfg, hc: hc, ua: ua, keys: keys, audit: audit}
+
+	// Say, once, how callers reach the relay — and warn when several of them
+	// reach it as one. In static mode every downstream identity arrives at the
+	// relay under the bootstrap credential, so the relay files their fetch
+	// history under a single key and meters them from a single rate-limit
+	// bucket. That is invisible from either side at runtime; it belongs in the
+	// startup log where an operator will see it.
+	audit.Printf("upstream.auth mode=%s bootstrap=%t downstream_identities=%d stateless=%t",
+		ua.mode, ua.token != "", len(hc.authTokens), hc.stateless)
+	if !ua.passthrough() && len(hc.authTokens) > 1 {
+		audit.Printf("upstream.auth.collapse identities=%d hint=%q", len(hc.authTokens),
+			"all downstream identities reach the relay as one: its per-caller fetch history "+
+				"(searxng_session_sources) and rate limits are shared between them. "+
+				"Set UPSTREAM_MCP_AUTH_MODE=passthrough to keep them separate")
+	}
 
 	// Connect to the upstream relay as an MCP client. Unlike key acquisition
 	// (which fails open above), this must succeed: the gateway enumerates the
@@ -200,8 +225,12 @@ func main() {
 // starting does not fail the gateway outright.
 func (g *gateway) connectUpstream(ctx context.Context) (*mcp.ClientSession, error) {
 	httpClient := &http.Client{
-		Timeout:   120 * time.Second,
-		Transport: &authTransport{token: g.cfg.token, base: http.DefaultTransport},
+		Timeout: 120 * time.Second,
+		Transport: &authTransport{
+			token: g.ua.token,
+			host:  upstreamHost(g.cfg.upstream),
+			base:  http.DefaultTransport,
+		},
 	}
 	transport := &mcp.StreamableClientTransport{
 		Endpoint:   g.cfg.upstream,
@@ -231,21 +260,64 @@ func (g *gateway) connectUpstream(ctx context.Context) (*mcp.ClientSession, erro
 	return nil, lastErr
 }
 
-// authTransport injects an Authorization: Bearer header on every upstream
-// request when a token is configured. It leaves requests untouched otherwise.
+// credentialKey types the context value carrying a caller's own Authorization
+// header value through to the upstream request.
+type credentialKey struct{}
+
+// withUpstreamCredential returns a context whose upstream request will present
+// authz — a complete Authorization header value, forwarded verbatim — instead
+// of the gateway's bootstrap credential.
+func withUpstreamCredential(ctx context.Context, authz string) context.Context {
+	return context.WithValue(ctx, credentialKey{}, authz)
+}
+
+func upstreamCredential(ctx context.Context) string {
+	v, _ := ctx.Value(credentialKey{}).(string)
+	return v
+}
+
+// authTransport decides which credential each upstream request carries: the
+// calling client's own, when one was put in the context by the proxy handler
+// (passthrough mode), and otherwise the gateway's bootstrap credential. A
+// request with neither goes out unauthenticated, which is correct against a
+// relay that requires no credential and fails loudly against one that does.
 type authTransport struct {
-	token string
+	token string // bootstrap credential, presented when the context carries none
+	host  string // upstream authority; no credential is attached to any other
 	base  http.RoundTripper
 }
 
 func (a *authTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	if a.token == "" {
+	// Never hand a credential to a host that is not the configured upstream.
+	// RoundTrip is called again for each redirect hop, so without this a 302
+	// from the relay to anywhere else collects the caller's bearer token.
+	if a.host != "" && !strings.EqualFold(r.URL.Host, a.host) {
+		return a.base.RoundTrip(r)
+	}
+
+	authz := upstreamCredential(r.Context())
+	if authz == "" && a.token != "" {
+		authz = "Bearer " + a.token
+	}
+	if authz == "" {
 		return a.base.RoundTrip(r)
 	}
 	// Clone before mutating: RoundTrip must not modify the caller's request.
 	r2 := r.Clone(r.Context())
-	r2.Header.Set("Authorization", "Bearer "+a.token)
+	r2.Header.Set("Authorization", authz)
 	return a.base.RoundTrip(r2)
+}
+
+// upstreamHost is the authority of the configured upstream endpoint, used to
+// scope credentials to it. An unparseable endpoint yields "", which disables
+// the host check rather than silently refusing to authenticate — connecting
+// would fail at once anyway, with a clearer message.
+func upstreamHost(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return ""
+	}
+	return u.Host
 }
 
 func deriveKeyURL(upstream string) string {

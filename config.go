@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -40,6 +42,89 @@ type httpConfig struct {
 	// X-Forwarded-Host when building the OAuth resource-metadata URL. Off by
 	// default — an unauthenticated caller must not get to nominate the issuer.
 	trustForwarded bool
+	// stateless is MCP_STATELESS, mirroring the relay's variable of the same
+	// name: the SDK skips session-ID issuance and treats every request as its
+	// own ephemeral session, so replicas can be load-balanced without sticky
+	// routing. Off by default, which is the session-per-client shape a single
+	// gateway wants. It must be set to the same value as the relay behind it:
+	// a stateless gateway in front of a stateful relay breaks the affinity
+	// chain in the middle, leaving the relay's session state stranded on
+	// whichever pod answered first.
+	stateless bool
+}
+
+// upstreamAuthMode selects which credential the gateway presents to the relay.
+type upstreamAuthMode string
+
+const (
+	// upstreamAuthStatic presents the gateway's own bootstrap credential on
+	// every upstream request, including tool calls. Every caller therefore
+	// reaches the relay as one identity.
+	upstreamAuthStatic upstreamAuthMode = "static"
+
+	// upstreamAuthPassthrough forwards the calling client's own Authorization
+	// header on tool calls, and uses the bootstrap credential only for
+	// protocol housekeeping.
+	//
+	// This is not a convenience. The relay derives caller identity solely from
+	// the token it receives, and files per-caller state under
+	// identity|session (see its historyKey). Substituting one credential for
+	// every caller collapses both halves of that key, so a shared gateway
+	// hands one caller another caller's fetch history and merges their rate
+	// limits. Forwarding the caller's own credential keeps the relay's
+	// separation intact without the relay changing at all.
+	upstreamAuthPassthrough upstreamAuthMode = "passthrough"
+)
+
+// upstreamAuth is how the gateway authenticates to the relay. It is deployment
+// configuration (environment), not verification behaviour (flags).
+type upstreamAuth struct {
+	mode upstreamAuthMode
+	// token is the bootstrap credential: one per gateway, never one per
+	// caller. It authenticates `initialize` and `tools/list` at startup —
+	// which happen before any client exists — and the SDK's housekeeping
+	// traffic that has no caller attached (ping, the GET event stream,
+	// session DELETE). In passthrough mode no tool call uses it.
+	token string
+}
+
+func (u upstreamAuth) passthrough() bool { return u.mode == upstreamAuthPassthrough }
+
+// upstreamAuthFromEnv reads UPSTREAM_MCP_AUTH_MODE and resolves the bootstrap
+// credential. flagToken is the -token flag, whose own default is
+// UPSTREAM_MCP_TOKEN; UPSTREAM_MCP_TOKEN_FILE is the file form, for
+// orchestrators that mount secrets rather than injecting them into the
+// environment (the relay's Helm chart mounts every credential this way).
+func upstreamAuthFromEnv(flagToken string) (upstreamAuth, error) {
+	u := upstreamAuth{mode: upstreamAuthStatic, token: strings.TrimSpace(flagToken)}
+
+	switch m := upstreamAuthMode(strings.ToLower(strings.TrimSpace(os.Getenv("UPSTREAM_MCP_AUTH_MODE")))); m {
+	case "":
+	case upstreamAuthStatic, upstreamAuthPassthrough:
+		u.mode = m
+	default:
+		return u, fmt.Errorf("unknown UPSTREAM_MCP_AUTH_MODE %q: want %q or %q",
+			m, upstreamAuthStatic, upstreamAuthPassthrough)
+	}
+
+	f := strings.TrimSpace(os.Getenv("UPSTREAM_MCP_TOKEN_FILE"))
+	if f == "" {
+		return u, nil
+	}
+	if u.token != "" {
+		return u, errors.New("set UPSTREAM_MCP_TOKEN (or -token) or UPSTREAM_MCP_TOKEN_FILE, not both")
+	}
+	data, err := os.ReadFile(f)
+	if err != nil {
+		return u, fmt.Errorf("read UPSTREAM_MCP_TOKEN_FILE: %w", err)
+	}
+	// A mounted secret usually carries a trailing newline; a credential with
+	// one attached authenticates against nothing.
+	u.token = strings.TrimSpace(string(data))
+	if u.token == "" {
+		return u, fmt.Errorf("UPSTREAM_MCP_TOKEN_FILE %q is empty", f)
+	}
+	return u, nil
 }
 
 func httpConfigFromEnv() (httpConfig, error) {
@@ -48,6 +133,7 @@ func httpConfigFromEnv() (httpConfig, error) {
 		tlsCert:        strings.TrimSpace(os.Getenv("MCP_TLS_CERT")),
 		tlsKey:         strings.TrimSpace(os.Getenv("MCP_TLS_KEY")),
 		trustForwarded: parseBool(os.Getenv("MCP_TRUST_FORWARDED_HEADERS")),
+		stateless:      parseBool(os.Getenv("MCP_STATELESS")),
 	}
 	if (c.tlsCert == "") != (c.tlsKey == "") {
 		return c, fmt.Errorf("MCP_TLS_CERT and MCP_TLS_KEY must be set together (got cert=%t key=%t)",
@@ -63,6 +149,33 @@ func httpConfigFromEnv() (httpConfig, error) {
 
 func (c httpConfig) httpMode() bool   { return c.port != "" }
 func (c httpConfig) tlsEnabled() bool { return c.tlsCert != "" && c.tlsKey != "" }
+
+// identityFor resolves an "Authorization" header value to the audit identity
+// it authenticated as, or "" when it matches no configured credential. It
+// mirrors requireAuth's order — static digest table first, then OAuth — and
+// both lookups are local: the digest table is a map read, and OAuth
+// verification works against an already-cached JWKS.
+//
+// Callers use this for attribution only. Authorisation has already happened in
+// requireAuth by the time a tool handler runs, so an empty identity here means
+// "not attributable" (a stdio call, which carries no HTTP header at all), never
+// "not allowed".
+func (c httpConfig) identityFor(ctx context.Context, authz string) string {
+	if authz == "" {
+		return ""
+	}
+	if id, ok := c.authTokens[sha256.Sum256([]byte(authz))]; ok {
+		return id
+	}
+	if c.oauth.enabled() {
+		if tok := bearerToken(authz); tok != "" {
+			if id, err := c.oauth.Verify(ctx, tok); err == nil {
+				return id
+			}
+		}
+	}
+	return ""
+}
 
 // parseAuthTokens builds the downstream bearer-token table from, in order,
 // MCP_AUTH_TOKEN (a single token), MCP_AUTH_TOKENS (comma-separated, each

@@ -297,7 +297,7 @@ func TestRequireAuth_StaticAndOAuthCoexist(t *testing.T) {
 		authTokens: tokenTable(staticTok, "static-alice"),
 		oauth:      oauth,
 	}
-	h := requireAuth(hc, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := requireAuth(hc, nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -328,7 +328,7 @@ func TestRequireAuth_StaticAndOAuthCoexist(t *testing.T) {
 
 func TestRequireAuth_OpenWhenNothingConfigured(t *testing.T) {
 	called := false
-	h := requireAuth(httpConfig{}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := requireAuth(httpConfig{}, nil, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
