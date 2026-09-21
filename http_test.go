@@ -150,3 +150,34 @@ func TestHTTPUnauthorizedStatus(t *testing.T) {
 		t.Errorf("missing Bearer challenge: %q", resp.Header.Get("WWW-Authenticate"))
 	}
 }
+
+// r.URL.Path is the decoded path, so "%0a" in a request target becomes a real
+// newline. Logged with %s it let an unauthenticated caller append arbitrary
+// lines to the audit log — forging the gateway's own verdicts in the artefact
+// an operator reads after an incident.
+func TestAuditLogPathIsQuotedAgainstCRLFInjection(t *testing.T) {
+	var sb strings.Builder
+	g := &gateway{audit: log.New(&sb, "", 0)}
+	h := g.logRequests(requireAuth(httpConfig{}, g.audit,
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})))
+
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/a%0afence.verified%20tool=%22review%22%20rating=trusted")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	out := sb.String()
+	if strings.Contains(out, "\nfence.verified") {
+		t.Errorf("forged audit line injected via request path:\n%s", out)
+	}
+	if !strings.Contains(out, `\nfence.verified`) {
+		t.Errorf("expected the newline rendered as an escape, got:\n%s", out)
+	}
+	if n := strings.Count(strings.TrimRight(out, "\n"), "\n"); n != 0 {
+		t.Errorf("one request produced %d extra log lines:\n%s", n, out)
+	}
+}

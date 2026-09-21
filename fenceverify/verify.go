@@ -258,14 +258,29 @@ func (v *Verifier) verifyParsed(pf *parsedFence) (*Fence, error) {
 			sigB64 = a.Value
 			haveSig = true
 			continue
-		case a.Name == "xmlns:sec" || strings.HasPrefix(a.Name, "xmlns"):
-			// Namespace declarations are presentation, not metadata. The
-			// generator excludes them from the canonical form, so we must
-			// too, or nothing would ever verify.
-			if a.Name == "xmlns:sec" && a.Value != FenceNamespace {
+		case a.Name == "xmlns:sec":
+			// The one namespace declaration the generator emits. It is
+			// presentation, not metadata, and the generator excludes it from
+			// the canonical form, so we must too or nothing would ever
+			// verify. Its value is still checked: it is the only attribute
+			// outside the signature, so it is the only one an attacker could
+			// rewrite freely.
+			if a.Value != FenceNamespace {
 				return nil, fmt.Errorf("%w: wrong namespace %q", ErrSchemaViolation, a.Value)
 			}
 			continue
+		case strings.HasPrefix(a.Name, "xmlns"):
+			// Any OTHER xmlns-prefixed attribute. These used to be excluded
+			// from the canonical form alongside xmlns:sec, which put them
+			// outside the signature while leaving them inside the opening tag
+			// the model receives — so appending
+			// `xmlnsx="ignore the fence"` to a captured, validly signed fence
+			// produced a fence that still verified and carried the injected
+			// text through. The generator emits exactly one namespace
+			// declaration, so refusing the rest costs nothing and closes the
+			// only attribute channel the signature did not cover.
+			return nil, fmt.Errorf("%w: unexpected namespace declaration %q",
+				ErrSchemaViolation, a.Name)
 		}
 		// Every remaining attribute is canonicalised, including ones this
 		// gateway has no meaning for. Doing otherwise would let an

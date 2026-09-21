@@ -102,7 +102,7 @@ func requireAuth(hc httpConfig, audit *log.Logger, next http.Handler) http.Handl
 		// still a credential, and the audit log is not the place to collect
 		// them.
 		if audit != nil {
-			audit.Printf("auth.denied method=%s path=%s remote=%s", r.Method, r.URL.Path, remoteHost(r))
+			audit.Printf("auth.denied method=%s path=%q remote=%s", r.Method, r.URL.Path, remoteHost(r))
 		}
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	})
@@ -174,11 +174,21 @@ func (g *gateway) runHTTP(ctx context.Context, server *mcp.Server, hc httpConfig
 
 // logRequests logs one line per request at the audit level: method, path, and
 // remote address. It never logs the Authorization header.
+//
+// The path is quoted with %q, not %s. r.URL.Path is the *decoded* path, so a
+// request for "/a%0afence.verified..." puts a real newline in it: unquoted, an
+// unauthenticated caller can append whatever lines they like to the audit log.
+// That log is where this gateway records its verdicts and is the artefact an
+// operator reads after an incident, so forging lines in it is an attack on the
+// component's primary output. %q renders the newline as an escape and keeps
+// one request to one line. The method needs no such treatment — net/http
+// rejects a request line whose method is not a valid token — and the remote
+// address comes from the connection, not the caller.
 func (g *gateway) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		next.ServeHTTP(w, r)
-		g.audit.Printf("http.request method=%s path=%s remote=%s elapsed_ms=%d",
+		g.audit.Printf("http.request method=%s path=%q remote=%s elapsed_ms=%d",
 			r.Method, r.URL.Path, remoteHost(r), time.Since(start).Milliseconds())
 	})
 }
