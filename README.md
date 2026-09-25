@@ -161,7 +161,7 @@ are on by default.
 | `MCP_AUTH_TOKEN_FILE` | File of tokens, one `identity:token` per line (`#` comments allowed). |
 | `MCP_TLS_CERT` / `MCP_TLS_KEY` | Serve HTTPS directly (both or neither). Omit to terminate TLS at a reverse proxy. |
 | `MCP_STATELESS` | No session-ID issuance, so replicas need no sticky routing. Must match the relay's setting — see below. |
-| `UPSTREAM_MCP_AUTH_MODE` | `static` (default) or `passthrough` — which credential tool calls carry upstream. See below. |
+| `UPSTREAM_MCP_AUTH_MODE` | `static` (default) or `passthrough` — which credential tool calls carry upstream. Required when more than one caller can reach the gateway. See below. |
 | `UPSTREAM_MCP_TOKEN` | The gateway's own bootstrap credential for the relay. One per gateway, not one per caller. |
 | `UPSTREAM_MCP_TOKEN_FILE` | The same credential read from a mounted file. Set one of the two, not both. |
 
@@ -206,6 +206,10 @@ decides which of those two things happens.
 |---|---|---|
 | `static` (default) | the gateway's own credential | one caller, or callers you are content to treat as one |
 | `passthrough` | the calling client's own `Authorization`, forwarded verbatim | more than one caller shares the gateway |
+
+With more than one caller (several static tokens, or OAuth, where every subject is a
+caller), the gateway refuses to start until `UPSTREAM_MCP_AUTH_MODE` is set. Sharing one
+relay identity is then a choice you made, not a default you missed.
 
 Pass-through needs HTTP mode (stdio has no downstream credential to forward)
 and keeps the relay unchanged: the tokens in the relay's table are the same

@@ -156,6 +156,9 @@ func main() {
 		fatal("%v", err)
 	}
 	hc.oauth = oauth
+	if err := checkSharedRelayIdentity(ua, hc); err != nil {
+		fatal("%v", err)
+	}
 
 	if _, err := keys.Refresh(ctx); err != nil {
 		// Not fatal: the relay may not be serving its key endpoint yet.
@@ -179,9 +182,11 @@ func main() {
 	// startup log where an operator will see it.
 	audit.Printf("upstream.auth mode=%s bootstrap=%t downstream_identities=%d stateless=%t",
 		ua.mode, ua.token != "", len(hc.authTokens), hc.stateless)
-	if !ua.passthrough() && len(hc.authTokens) > 1 {
-		audit.Printf("upstream.auth.collapse identities=%d hint=%q", len(hc.authTokens),
-			"all downstream identities reach the relay as one: its per-caller fetch history "+
+	// Reached only when static was chosen on purpose: checkSharedRelayIdentity
+	// refuses the unchosen case before this point.
+	if !ua.passthrough() && hc.multiCaller() {
+		audit.Printf("upstream.auth.collapse callers=%q hint=%q", describeCallers(hc),
+			"all downstream callers reach the relay as one: its per-caller fetch history "+
 				"(searxng_session_sources) and rate limits are shared between them. "+
 				"Set UPSTREAM_MCP_AUTH_MODE=passthrough to keep them separate")
 	}
