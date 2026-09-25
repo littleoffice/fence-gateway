@@ -86,6 +86,10 @@ type upstreamAuth struct {
 	// traffic that has no caller attached (ping, session DELETE). In
 	// passthrough mode no tool call uses it.
 	token string
+	// explicit records that UPSTREAM_MCP_AUTH_MODE was set rather than left
+	// at its default. Several callers may share one relay identity only when
+	// that was chosen; see checkSharedRelayIdentity.
+	explicit bool
 }
 
 func (u upstreamAuth) passthrough() bool { return u.mode == upstreamAuthPassthrough }
@@ -102,6 +106,7 @@ func upstreamAuthFromEnv(flagToken string) (upstreamAuth, error) {
 	case "":
 	case upstreamAuthStatic, upstreamAuthPassthrough:
 		u.mode = m
+		u.explicit = true
 	default:
 		return u, fmt.Errorf("unknown UPSTREAM_MCP_AUTH_MODE %q: want %q or %q",
 			m, upstreamAuthStatic, upstreamAuthPassthrough)
@@ -125,6 +130,49 @@ func upstreamAuthFromEnv(flagToken string) (upstreamAuth, error) {
 		return u, fmt.Errorf("UPSTREAM_MCP_TOKEN_FILE %q is empty", f)
 	}
 	return u, nil
+}
+
+// multiCaller reports whether more than one caller can reach the gateway: more
+// than one static token, or OAuth, where every subject is a caller of its own.
+func (c httpConfig) multiCaller() bool {
+	return c.httpMode() && (len(c.authTokens) > 1 || c.oauth.enabled())
+}
+
+// checkSharedRelayIdentity refuses to start when several callers would reach
+// the relay as one without the operator having chosen that.
+//
+// In static mode every caller reaches the relay under the gateway's bootstrap
+// credential, and the relay keys its per-caller state on the credential it
+// sees. So they share one fetch history — searxng_session_sources shows each
+// of them what the others read — and one rate limit. That used to be the
+// silent default with only a startup log line to say so. It is now allowed
+// only when UPSTREAM_MCP_AUTH_MODE=static is set on purpose.
+//
+// Refusing, rather than switching to passthrough by itself, is deliberate:
+// passthrough needs the relay to accept the callers' own tokens, and turning
+// it on unasked would break every deployment whose relay knows only the
+// gateway's.
+func checkSharedRelayIdentity(ua upstreamAuth, hc httpConfig) error {
+	if ua.passthrough() || ua.explicit || !hc.multiCaller() {
+		return nil
+	}
+	return fmt.Errorf("%s would reach the relay as one caller: it keys its fetch history "+
+		"(searxng_session_sources) and rate limits on the credential it sees, so they would "+
+		"share both. Set UPSTREAM_MCP_AUTH_MODE=passthrough to keep them apart (the relay must "+
+		"accept the same tokens), or UPSTREAM_MCP_AUTH_MODE=static to share on purpose",
+		describeCallers(hc))
+}
+
+// describeCallers names who can call the gateway, for log lines and errors.
+func describeCallers(hc httpConfig) string {
+	switch {
+	case hc.oauth.enabled() && len(hc.authTokens) > 0:
+		return fmt.Sprintf("%d static identities and every OAuth subject", len(hc.authTokens))
+	case hc.oauth.enabled():
+		return "every OAuth subject"
+	default:
+		return fmt.Sprintf("%d static identities", len(hc.authTokens))
+	}
 }
 
 func httpConfigFromEnv() (httpConfig, error) {

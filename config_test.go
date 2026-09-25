@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	oidc "github.com/coreos/go-oidc/v3/oidc"
 )
 
 func TestParseAuthTokensSingle(t *testing.T) {
@@ -104,5 +106,60 @@ func TestHTTPModeToggle(t *testing.T) {
 	t.Setenv("MCP_PORT", "9090")
 	if c, _ := httpConfigFromEnv(); !c.httpMode() {
 		t.Error("MCP_PORT set should be HTTP mode")
+	}
+}
+
+// Several callers may reach the relay as one only when that was chosen. Left at
+// the default, static mode would give every caller the same relay identity:
+// one fetch history (so searxng_session_sources shows each what the others
+// read) and one rate limit.
+func TestCheckSharedRelayIdentity(t *testing.T) {
+	one := map[tokenDigest]string{{1}: "alice"}
+	two := map[tokenDigest]string{{1}: "alice", {2}: "bob"}
+	oauth := &oauthSettings{verifier: &oidc.IDTokenVerifier{}}
+	implicitStatic := upstreamAuth{mode: upstreamAuthStatic}
+	explicitStatic := upstreamAuth{mode: upstreamAuthStatic, explicit: true}
+	passthrough := upstreamAuth{mode: upstreamAuthPassthrough, explicit: true}
+
+	cases := []struct {
+		name    string
+		ua      upstreamAuth
+		hc      httpConfig
+		wantErr bool
+	}{
+		{"stdio", implicitStatic, httpConfig{}, false},
+		{"one static identity", implicitStatic, httpConfig{port: "9090", authTokens: one}, false},
+		{"two identities, mode left at default", implicitStatic, httpConfig{port: "9090", authTokens: two}, true},
+		{"OAuth, mode left at default", implicitStatic, httpConfig{port: "9090", oauth: oauth}, true},
+		{"one identity plus OAuth, mode left at default", implicitStatic, httpConfig{port: "9090", authTokens: one, oauth: oauth}, true},
+		{"two identities, static chosen", explicitStatic, httpConfig{port: "9090", authTokens: two}, false},
+		{"OAuth, static chosen", explicitStatic, httpConfig{port: "9090", oauth: oauth}, false},
+		{"two identities, passthrough", passthrough, httpConfig{port: "9090", authTokens: two}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := checkSharedRelayIdentity(c.ua, c.hc)
+			if (err != nil) != c.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, c.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "UPSTREAM_MCP_AUTH_MODE=passthrough") {
+				t.Errorf("error does not say how to fix it: %v", err)
+			}
+		})
+	}
+}
+
+// Setting UPSTREAM_MCP_AUTH_MODE, even to the default value, counts as a choice.
+func TestUpstreamAuthModeExplicit(t *testing.T) {
+	t.Setenv("UPSTREAM_MCP_TOKEN_FILE", "")
+	for env, want := range map[string]bool{"": false, "static": true, "passthrough": true} {
+		t.Setenv("UPSTREAM_MCP_AUTH_MODE", env)
+		ua, err := upstreamAuthFromEnv("tok")
+		if err != nil {
+			t.Fatalf("%q: %v", env, err)
+		}
+		if ua.explicit != want {
+			t.Errorf("UPSTREAM_MCP_AUTH_MODE=%q: explicit = %v, want %v", env, ua.explicit, want)
+		}
 	}
 }
