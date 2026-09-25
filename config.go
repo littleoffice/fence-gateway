@@ -83,8 +83,8 @@ type upstreamAuth struct {
 	// token is the bootstrap credential: one per gateway, never one per
 	// caller. It authenticates `initialize` and `tools/list` at startup —
 	// which happen before any client exists — and the SDK's housekeeping
-	// traffic that has no caller attached (ping, the GET event stream,
-	// session DELETE). In passthrough mode no tool call uses it.
+	// traffic that has no caller attached (ping, session DELETE). In
+	// passthrough mode no tool call uses it.
 	token string
 }
 

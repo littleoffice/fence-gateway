@@ -224,18 +224,7 @@ func main() {
 // client session. It retries a few times with backoff so a relay that is still
 // starting does not fail the gateway outright.
 func (g *gateway) connectUpstream(ctx context.Context) (*mcp.ClientSession, error) {
-	httpClient := &http.Client{
-		Timeout: 120 * time.Second,
-		Transport: &authTransport{
-			token: g.ua.token,
-			host:  upstreamHost(g.cfg.upstream),
-			base:  http.DefaultTransport,
-		},
-	}
-	transport := &mcp.StreamableClientTransport{
-		Endpoint:   g.cfg.upstream,
-		HTTPClient: httpClient,
-	}
+	transport := g.upstreamTransport()
 	client := mcp.NewClient(&mcp.Implementation{Name: "fence-gateway", Version: ServerVersion}, nil)
 
 	var lastErr error
@@ -258,6 +247,33 @@ func (g *gateway) connectUpstream(ctx context.Context) (*mcp.ClientSession, erro
 		g.audit.Printf("upstream.connect.retry attempt=%d err=%q", attempt+1, err)
 	}
 	return nil, lastErr
+}
+
+// upstreamTransport builds the Streamable HTTP client transport to the relay.
+//
+// The http.Client carries no Timeout. A client-wide timeout bounds the whole
+// exchange, body included, so it cuts every response stream that outlives it —
+// and against a stateful relay, whose streams carry no event IDs, the SDK
+// counts each cut as a reconnect without progress and closes the session for
+// good after five. The gateway then fails every tool call until restarted. Tool
+// calls are bounded by the caller's context instead, and connection setup by
+// http.DefaultTransport's dial and TLS handshake timeouts.
+//
+// The standalone SSE stream (the long-lived GET) is disabled. It carries
+// server-initiated messages, and the gateway forwards none, so holding it open
+// only adds a connection that can fail the session.
+func (g *gateway) upstreamTransport() *mcp.StreamableClientTransport {
+	return &mcp.StreamableClientTransport{
+		Endpoint: g.cfg.upstream,
+		HTTPClient: &http.Client{
+			Transport: &authTransport{
+				token: g.ua.token,
+				host:  upstreamHost(g.cfg.upstream),
+				base:  http.DefaultTransport,
+			},
+		},
+		DisableStandaloneSSE: true,
+	}
 }
 
 // credentialKey types the context value carrying a caller's own Authorization
