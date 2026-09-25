@@ -191,12 +191,14 @@ func main() {
 	// upstream's tools to build its own tool surface, so it cannot serve a
 	// client until the relay answers. Retry briefly to tolerate a relay that
 	// is still coming up, then give up with a clear message.
-	up, err := g.connectUpstream(ctx)
-	if err != nil {
+	//
+	// After that the session is replaced whenever the relay drops it (a
+	// restart, or its idle-session janitor) — see upstream.go.
+	g.up = &upstreamSession{connect: g.connectUpstream, audit: audit}
+	if _, err := g.up.session(); err != nil {
 		fatal("connect upstream %q: %v", cfg.upstream, err)
 	}
-	defer func() { _ = up.Close() }()
-	g.up = up
+	defer func() { _ = g.up.Close() }()
 
 	// Build the downstream MCP server and register a verifying proxy handler
 	// for every tool the upstream exposes (see proxy.go).
@@ -219,6 +221,9 @@ func main() {
 	}
 }
 
+// upstreamConnectTimeout bounds one attempt to open a session with the relay.
+const upstreamConnectTimeout = 30 * time.Second
+
 // connectUpstream dials the upstream relay over the Streamable HTTP transport,
 // authenticating with the configured bearer token, and returns an initialized
 // client session. It retries a few times with backoff so a relay that is still
@@ -238,7 +243,14 @@ func (g *gateway) connectUpstream(ctx context.Context) (*mcp.ClientSession, erro
 				backoff *= 2
 			}
 		}
-		sess, err := client.Connect(ctx, transport, nil)
+		// Bounded per attempt: the upstream HTTP client has no timeout of its
+		// own (see upstreamTransport), so a relay that accepts the connection
+		// but never answers would otherwise hang here for good. The SDK
+		// detaches the session from this context, so the deadline ends only
+		// the handshake, not the session.
+		actx, cancel := context.WithTimeout(ctx, upstreamConnectTimeout)
+		sess, err := client.Connect(actx, transport, nil)
+		cancel()
 		if err == nil {
 			g.audit.Printf("upstream.connected endpoint=%q", g.cfg.upstream)
 			return sess, nil

@@ -96,12 +96,11 @@ func startPassthroughRig(t *testing.T, ctx context.Context, pub ed25519.PublicKe
 		keys:  &fv.StaticKeys{K: []ed25519.PublicKey{pub}},
 		audit: log.New(rig.audit, "", 0),
 	}
-	up, err := g.connectUpstream(ctx)
-	if err != nil {
+	g.up = &upstreamSession{connect: g.connectUpstream, audit: g.audit}
+	if _, err := g.up.session(); err != nil {
 		t.Fatalf("connect upstream: %v", err)
 	}
-	t.Cleanup(func() { _ = up.Close() })
-	g.up = up
+	t.Cleanup(func() { _ = g.up.Close() })
 
 	dSrv := mcp.NewServer(&mcp.Implementation{Name: "fence-gateway", Version: "test"}, nil)
 	if err := g.registerTools(ctx, dSrv); err != nil {
@@ -247,7 +246,7 @@ func TestPassthroughFailsClosedWithoutCredential(t *testing.T) {
 
 	g := testGateway(PolicyReject, pub)
 	g.ua = upstreamAuth{mode: upstreamAuthPassthrough, token: strings.Repeat("g", 64)}
-	g.up = up
+	g.up = &upstreamSession{sess: up, audit: g.audit}
 
 	// An in-memory downstream call carries no HTTP request, so Extra is nil —
 	// the same state as a tool call that arrived without an Authorization

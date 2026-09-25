@@ -233,6 +233,12 @@ routing. **Set it the same on both.** A stateless gateway in front of a
 stateful relay breaks the affinity chain in the middle, leaving the relay's
 session state stranded on whichever replica answered first.
 
+Against a stateful relay, the gateway replaces its upstream session whenever the relay
+drops it: after a relay restart, or when the relay's janitor closes the session
+(`MCP_SESSION_MAX_AGE`, seven days by default). The call that finds the session gone
+reconnects under the gateway's own bootstrap credential and is retried once, so callers
+do not see it. The audit log records `upstream.session.lost`.
+
 ### Container
 
 The gateway ships as a minimal, reproducibly-built container image

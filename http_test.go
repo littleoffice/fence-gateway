@@ -51,7 +51,7 @@ func startHTTPGateway(t *testing.T, ctx context.Context, pub ed25519.PublicKey, 
 		cfg:   config{policy: PolicyReject},
 		keys:  &fv.StaticKeys{K: []ed25519.PublicKey{pub}},
 		audit: log.New(io.Discard, "", 0),
-		up:    up,
+		up:    &upstreamSession{sess: up},
 	}
 	dSrv := mcp.NewServer(&mcp.Implementation{Name: "fence-gateway", Version: "test"}, nil)
 	if err := g.registerTools(ctx, dSrv); err != nil {

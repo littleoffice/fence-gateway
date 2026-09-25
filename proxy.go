@@ -22,7 +22,7 @@ type gateway struct {
 	ua    upstreamAuth
 	keys  fv.KeySource
 	audit *log.Logger
-	up    *mcp.ClientSession
+	up    *upstreamSession
 }
 
 // registerTools enumerates the upstream relay's tools and installs a verifying
@@ -33,8 +33,12 @@ type gateway struct {
 // ClientSession.Tools paginates internally, so a relay exposing more tools than
 // one page still registers completely.
 func (g *gateway) registerTools(ctx context.Context, server *mcp.Server) error {
+	sess, err := g.up.session()
+	if err != nil {
+		return fmt.Errorf("connect upstream: %w", err)
+	}
 	n := 0
-	for tool, err := range g.up.Tools(ctx, nil) {
+	for tool, err := range sess.Tools(ctx, nil) {
 		if err != nil {
 			return fmt.Errorf("list upstream tools: %w", err)
 		}
