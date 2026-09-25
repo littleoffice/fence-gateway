@@ -191,3 +191,55 @@ func TestRelayVectorsTamperingRejected(t *testing.T) {
 		})
 	}
 }
+
+// Real relay output fits together: CheckLayout finds nothing wrong with any
+// vector. And the two attacks it exists for, applied to real 1.1 output, are
+// caught — though every signature left in the response still verifies.
+func TestRelayVectorsLayout(t *testing.T) {
+	dir, pk, vs := loadVectors(t)
+	byName := map[string]Vector{}
+	for _, v := range vs {
+		byName[v.Name] = v
+	}
+	check := func(t *testing.T, s string) []string {
+		t.Helper()
+		res, err := verifier(pk).Verify(s)
+		if err != nil {
+			t.Fatalf("verify: %v", err)
+		}
+		if len(res.Rejections) != 0 {
+			t.Fatalf("a fence failed to verify: %+v", res.Rejections)
+		}
+		return fv.CheckLayout(res)
+	}
+
+	for _, v := range vs {
+		t.Run(v.Name, func(t *testing.T) {
+			s := readVector(t, dir, v)
+			if p := check(t, s); len(p) != 0 {
+				t.Fatalf("real relay output has layout problems: %q", p)
+			}
+			if v.Layout != fv.FormatFenced {
+				return
+			}
+			contentAt := strings.LastIndex(s, "<sec:fence xmlns")
+
+			// The preamble removed: the content fence verifies alone.
+			if p := check(t, s[contentAt:]); len(p) == 0 {
+				t.Error("1.1 content fence without its preamble passed the layout check")
+			}
+
+			// A 1.1 preamble spliced onto the 1.0 content fence of the same
+			// case: both signatures are real.
+			old, ok := byName["v1.0"+strings.TrimPrefix(v.Name, "v1.1")]
+			if !ok {
+				t.Fatalf("no 1.0 counterpart for %s", v.Name)
+			}
+			o := readVector(t, dir, old)
+			spliced := s[:contentAt] + o[strings.LastIndex(o, "<sec:fence xmlns"):]
+			if p := check(t, spliced); len(p) == 0 {
+				t.Error("1.1 preamble spliced onto a 1.0 content fence passed the layout check")
+			}
+		})
+	}
+}

@@ -336,6 +336,16 @@ fenced. `-require-all-fenced` surfaces the gap; the real fix is to wrap the prea
 its own `rating="trusted" type="instructions"` fence, which is what the paper prescribes
 for system instructions anyway.
 
+The relay now does this under `FENCE_PREAMBLE=fenced` (format 1.1). But a signature only
+covers its own fence: cut the preamble out, or splice a preamble from one response onto
+another's content, and everything left still verifies. So the gateway also checks how the
+fences fit together. Under 1.1, each content fence must follow a trusted preamble fence
+(`source="mcp-searxng-relay:awareness"`) that names its nonce and shares its key and
+timestamp. All fences in a response must share one format. A trusted fence can only be
+that preamble. And a response in an older format than the relay's key endpoint reports is
+a downgrade, unless a re-read of the endpoint shows the relay was rolled back. Any of
+these is a failure, and the policy applies.
+
 **Signatures carry no freshness.** A valid fence is valid forever. Anything that caches
 or replays tool output can feed stale content into a live session with a perfect
 signature. `-max-age` bounds it against the fence timestamp.

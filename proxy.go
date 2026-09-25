@@ -183,6 +183,13 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 				tool, identity, len(r.UnsignedRegions), r.UnsignedRegions[0])
 			problems = append(problems, fmt.Sprintf("%d unsigned region(s) outside the fence", len(r.UnsignedRegions)))
 		}
+		// Every signature above holds on its own; this checks how the fences
+		// fit together — above all that a 1.1 content fence still has the
+		// preamble telling the model to treat it as data.
+		for _, p := range append(fv.CheckLayout(r), g.checkFormatDowngrade(ctx, r)...) {
+			g.audit.Printf("fence.layout tool=%q identity=%q problem=%q", tool, identity, p)
+			problems = append(problems, p)
+		}
 		verified++
 	}
 
@@ -234,6 +241,35 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 	default:
 		return res
 	}
+}
+
+// checkFormatDowngrade compares the format of a verified response with the one
+// the relay's key endpoint reports. The relay emits a single format, so an
+// older one on the wire is either a relay that has since been rolled back to
+// it, or a downgrade: a 1.0 response carries its preamble unsigned, where a
+// 1.1 one would have signed it. The endpoint is re-read once before deciding,
+// so a rollback is followed rather than blocked.
+//
+// A fence with no version is left alone: the attribute is signed, so it cannot
+// have been stripped, and fences without one come from producers that predate
+// it.
+func (g *gateway) checkFormatDowngrade(ctx context.Context, r *fv.Result) []string {
+	src, ok := g.keys.(interface{ FormatVersion() string })
+	if !ok || len(r.Fences) == 0 || r.Fences[0].Version() == "" {
+		return nil
+	}
+	got := r.Fences[0].Version()
+	want := src.FormatVersion()
+	if want == "" || !fv.OlderFormat(got, want) {
+		return nil
+	}
+	if _, err := g.keys.Refresh(ctx); err == nil {
+		want = src.FormatVersion()
+	}
+	if want == "" || !fv.OlderFormat(got, want) {
+		return nil
+	}
+	return []string{fmt.Sprintf("response is fence format %q but the relay reports %q: a downgrade", got, want)}
 }
 
 // relayNoResults is the relay's reply to a search with no hits: the one

@@ -5,10 +5,18 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+
+	fv "github.com/littleoffice/fence-gateway/fenceverify"
 )
 
 // TestRelayVectorsThroughGateway runs the interop vectors — real output from
@@ -59,5 +67,77 @@ func TestRelayVectorsThroughGateway(t *testing.T) {
 				t.Errorf("-require-all-fenced: blocked=%v, want %v for layout %s", isErr, want, v.Layout)
 			}
 		})
+	}
+}
+
+// vectorKey and vector read one interop vector and its key for the tests below.
+func vectorKey(t *testing.T) ed25519.PublicKey {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("interop", "testdata", "relay", "pub.b64"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pk, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pk
+}
+
+func vector(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("interop", "testdata", "relay", name+".txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// Real 1.1 relay output with its trusted preamble cut out. The content fence
+// still verifies on its own, and nothing is left unsigned, so this used to pass
+// even under -policy reject -require-all-fenced — delivering the page without
+// the text telling the model to treat it as data.
+func TestGatewayBlocksStrippedPreamble(t *testing.T) {
+	s := vector(t, "v1.1-escaped-ordinary")
+	stripped := s[strings.LastIndex(s, "<sec:fence xmlns"):]
+	for _, requireAll := range []bool{false, true} {
+		g := testGateway(PolicyReject, vectorKey(t))
+		g.cfg.requireAll = requireAll
+		if _, isErr := resultText(g.verify(context.Background(), "tool", "test-caller", textResult(stripped))); !isErr {
+			t.Errorf("stripped preamble passed (require-all-fenced=%v)", requireAll)
+		}
+	}
+}
+
+// A relay that reports format 1.1 at its key endpoint, answered with a 1.0
+// response: the preamble is unsigned there, so this is a downgrade. But if the
+// relay has really been rolled back, the endpoint says so on a re-read, and
+// the response passes.
+func TestGatewayDowngradeAndRollback(t *testing.T) {
+	pk := vectorKey(t)
+	var version atomic.Value
+	version.Store("1.1")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"version":%q,"algorithm":"Ed25519","publicKey":%q,"fingerprint":%q}`,
+			version.Load(), base64.StdEncoding.EncodeToString(pk), fv.Fingerprint(pk))
+	}))
+	t.Cleanup(srv.Close)
+	keys := &fv.EndpointKeys{URL: srv.URL, RetainPrevious: true}
+	if _, err := keys.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	g := &gateway{cfg: config{policy: PolicyReject}, keys: keys, audit: log.New(io.Discard, "", 0)}
+	old := textResult(vector(t, "v1.0-escaped-ordinary"))
+
+	if _, isErr := resultText(g.verify(context.Background(), "tool", "test-caller", old)); !isErr {
+		t.Error("a 1.0 response from a relay reporting 1.1 passed")
+	}
+	if _, isErr := resultText(g.verify(context.Background(), "tool", "test-caller", textResult(vector(t, "v1.1-escaped-ordinary")))); isErr {
+		t.Error("a 1.1 response from a relay reporting 1.1 was blocked")
+	}
+
+	version.Store("1.0") // the relay was rolled back
+	if out, isErr := resultText(g.verify(context.Background(), "tool", "test-caller", textResult(vector(t, "v1.0-escaped-ordinary")))); isErr {
+		t.Errorf("a rolled-back relay's 1.0 response was blocked: %q", out)
 	}
 }

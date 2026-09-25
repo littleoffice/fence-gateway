@@ -109,6 +109,7 @@ type EndpointKeys struct {
 	current []ed25519.PublicKey
 	fpSeen  string
 	fetched time.Time
+	version string
 }
 
 type fenceKeyDoc struct {
@@ -197,5 +198,17 @@ func (e *EndpointKeys) Refresh(ctx context.Context) (bool, error) {
 	}
 	e.fpSeen = fp
 	e.fetched = time.Now()
+	e.version = doc.Version
 	return changed, nil
+}
+
+// FormatVersion is the fence format version the endpoint reported at the last
+// successful fetch ("" if it reported none, or before the first fetch). The
+// relay reports the format it emits, so a verified fence of an older format is
+// either a relay that has since rolled back — re-fetch to find out — or a
+// downgrade.
+func (e *EndpointKeys) FormatVersion() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.version
 }
