@@ -19,7 +19,7 @@ implementer.
 |---|---|---|
 | Validate all fence signatures **before** the content reaches the LLM | ✅ | `verify()` runs on every tool result before it is returned to the client/model (`proxy.go`) |
 | Maintain and manage cryptographic keys | ✅ | `fenceverify.EndpointKeys` — acquire from the relay's `/fence/public-key`, cache, retain previous across rotation |
-| Reject invalid **or missing** signatures | ◑ | Invalid → replaced with an error result under `-policy reject` (the default). *Missing* (unsigned regions) → surfaced only with `-require-all-fenced`, which is **off by default** — see [Deliberate divergences](#deliberate-divergences) |
+| Reject invalid **or missing** signatures | ◑ | Invalid → replaced with an error result under `-policy reject` (the default). *Missing* → a text block with no fence at all fails by default, except the relay's `No results found.` and its error messages (shortened, labelled unverified). Unsigned text *beside* a verified fence (the relay's 1.0 preamble) is surfaced only with `-require-all-fenced`, which is **off by default** — see [Deliberate divergences](#deliberate-divergences) |
 | Log security events for an audit trail | ✅ | Structured audit log: `fence.verified`, `fence.rejected`, `fence.policy.reject`, `fence.key.rotated` — attacker-controlled text goes to the log (read by a human), never back to the model |
 | Handle key rotation and certificate management | ✅ / n/a | Rotation: refetch-and-retry on a verification failure, plus `-pin` and `-tofu`. "Certificate management" is n/a — the relay signs with raw Ed25519 keys, not X.509 certificates, so there are no certs to manage (TLS certs for the HTTP transport are a separate concern) |
 | *(optional)* Strip signature data before the model sees it | ✅ | `-strip-signature` removes the `signature="…"` attribute from verified fences; the nonce is kept because the awareness preamble names it |
@@ -52,8 +52,10 @@ Two, both documented rather than hidden:
    however, emits an **unsigned awareness preamble** outside the fence (the text
    that tells the model to treat the fenced content as data). Rejecting all
    unsigned text by default would block every legitimate response. So the
-   default tolerates unsigned regions and `-require-all-fenced` surfaces them on
-   demand. The real fix is upstream — wrap the preamble in its own
+   default tolerates unsigned regions beside a verified fence, and
+   `-require-all-fenced` surfaces them on demand. A text block with no fence at
+   all is not tolerated by default (the relay's no-results reply and its error
+   messages aside). The real fix is upstream — wrap the preamble in its own
    `rating="trusted" type="instructions"` fence, which is what the paper
    prescribes for system instructions anyway. See the README's
    ["What this found"](../README.md#what-this-found).

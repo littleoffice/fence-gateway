@@ -265,6 +265,13 @@ paper's Security Gateway (§4.5, §7.4.3).
 with a warning and `isError`), or `audit` (log only). Only `reject` actually stops an
 attack; the other two describe one.
 
+A text block with no fence at all is a failure too, and the policy applies to it. A
+substituted relay, or anyone on a plain-HTTP link, does not need to forge a signature to
+reach the model; it only has to leave the fence out. Two replies the relay sends unfenced
+are let through: the exact text `No results found.`, and error results, which are
+shortened and labelled as unverified so a failed fetch still reads as a failed fetch.
+`-require-all-fenced` goes further and accepts nothing unsigned, those two included.
+
 ## Reconciling the paper with the relay
 
 Four places where the two disagree, and what the verifier does about each.
