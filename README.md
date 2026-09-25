@@ -123,7 +123,7 @@ proxy core:
 
 Configuration splits cleanly: **verification behavior is set by flags**
 (`-upstream`, `-policy`, `-pin`, `-max-age`, `-strip-signature`,
-`-require-all-fenced`, `-paper-scheme`, `-tofu`, `-key-url`), and
+`-require-all-fenced`, `-fence-version`, `-paper-scheme`, `-tofu`, `-key-url`), and
 **deployment is set by environment variables** (mirroring the relay's names).
 The tokens clients present *to the gateway* in HTTP mode are the
 `MCP_AUTH_TOKEN*` family below. What the gateway presents *to the relay*
@@ -335,6 +335,24 @@ defeated by editing it, without touching a signature, and §4.2 assumes every se
 fenced. `-require-all-fenced` surfaces the gap; the real fix is to wrap the preamble in
 its own `rating="trusted" type="instructions"` fence, which is what the paper prescribes
 for system instructions anyway.
+
+The relay now does this under `FENCE_PREAMBLE=fenced` (format 1.1). But a signature only
+covers its own fence: cut the preamble out, or splice a preamble from one response onto
+another's content, and everything left still verifies. So the gateway also checks how the
+fences fit together. Under 1.1, each content fence must follow a trusted preamble fence
+(`source="mcp-searxng-relay:awareness"`) that names its nonce and shares its key and
+timestamp. All fences in a response must share one format. A trusted fence can only be
+that preamble. And a response in an older format than the relay's key endpoint reports is
+a downgrade, unless a re-read of the endpoint shows the relay was rolled back. Any of
+these is a failure, and the policy applies.
+
+`-fence-version` sets the oldest format accepted outright. `auto` (the default) follows
+the key endpoint as above, because the relay itself defaults to 1.0. `1.1` requires the
+signed preamble on every response, and is the setting to use once the relay runs with
+`FENCE_PREAMBLE=fenced`. `1.0` accepts either relay format but refuses fences with no
+version, which only other producers emit. If the relay reports an older format than
+required at startup, the gateway logs `fence.version.mismatch`, since every result
+would then be blocked.
 
 **Signatures carry no freshness.** A valid fence is valid forever. Anything that caches
 or replays tool output can feed stale content into a live session with a perfect

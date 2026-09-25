@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/url"
 	"strings"
+
+	fv "github.com/littleoffice/fence-gateway/fenceverify"
 )
 
 // fingerprintLen is the length of a relay key fingerprint: the first 8 bytes
@@ -81,4 +83,23 @@ func isLoopback(host string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// parseFenceVersion reads -fence-version: "auto" (the default) returns "",
+// meaning follow what the relay's key endpoint reports; "1.0" or "1.1" is the
+// oldest fence format to accept.
+//
+// 1.1 is the setting to aim for: it requires the awareness preamble to arrive
+// signed, so a response without it is refused even before the endpoint is
+// consulted. It needs the relay at FENCE_PREAMBLE=fenced, which is not the
+// relay's default — hence auto. 1.0 accepts either relay format but refuses
+// fences with no version at all, which come only from other producers.
+func parseFenceVersion(v string) (string, error) {
+	switch v = strings.TrimSpace(v); v {
+	case "", "auto":
+		return "", nil
+	case fv.FormatProse, fv.FormatFenced:
+		return v, nil
+	}
+	return "", fmt.Errorf("-fence-version %q: want auto, %s or %s", v, fv.FormatProse, fv.FormatFenced)
 }

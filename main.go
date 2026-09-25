@@ -73,6 +73,9 @@ type config struct {
 	maxAge     time.Duration
 	stripSig   bool
 	requireAll bool
+	// minFormat is the oldest fence format accepted (-fence-version), or ""
+	// for auto: follow what the relay's key endpoint reports.
+	minFormat string
 }
 
 func main() {
@@ -86,6 +89,7 @@ func main() {
 		paper    = flag.Bool("paper-scheme", false, "verify using the paper's literal Ed25519(SHA-256(C||M)) construction")
 		maxAge   = flag.Duration("max-age", 0, "reject fences older than this (0 disables)")
 		stripSig = flag.Bool("strip-signature", false, "remove signature attributes from verified fences before forwarding")
+		fenceVer = flag.String("fence-version", "auto", "oldest fence format to accept: auto (follow the relay's key endpoint), 1.0, or 1.1 (require the signed preamble)")
 		reqAll   = flag.Bool("require-all-fenced", false, "treat any unsigned text in a tool result as a failure, including the relay's unfenced no-results reply and error messages")
 		version  = flag.Bool("version", false, "print version and exit")
 	)
@@ -114,6 +118,9 @@ func main() {
 		fatal("%v", err)
 	}
 	cfg.pin = pinned
+	if cfg.minFormat, err = parseFenceVersion(*fenceVer); err != nil {
+		fatal("%v", err)
+	}
 
 	// Parse HTTP-mode deployment config (MCP_PORT, downstream auth tokens, TLS)
 	// before doing any work, so a misconfiguration fails fast rather than after
@@ -181,6 +188,12 @@ func main() {
 		k, _ := keys.Keys(ctx)
 		if len(k) > 0 {
 			audit.Printf("fence.key.loaded fingerprint=%s policy=%s", fv.Fingerprint(k[0]), cfg.policy)
+		}
+		// Every result will fail -fence-version: say so now, not per call.
+		if v := keys.FormatVersion(); cfg.minFormat != "" && fv.OlderFormat(v, cfg.minFormat) {
+			audit.Printf("fence.version.mismatch relay=%q required=%q hint=%q", v, cfg.minFormat,
+				"the relay emits an older fence format than -fence-version requires, so every result "+
+					"will be blocked: set FENCE_PREAMBLE=fenced on the relay, or lower -fence-version")
 		}
 	}
 
