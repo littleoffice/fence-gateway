@@ -128,9 +128,10 @@ depth in the README):
 - **Zero third-party dependencies.** The verification path is implemented against
   the Go standard library's `crypto/ed25519` and `crypto/sha256`. See
   [supply-chain.md](supply-chain.md#dependency-inventory).
-- **Optional key pinning (`-pin`), staleness bounds (`-max-age`), nonce
+- **Key pinning (`-pin`), staleness bounds (`-max-age`), nonce
   enforcement, and an all-fenced check (`-require-all-fenced`)** let an operator
-  tighten the guarantees to their threat model.
+  tighten the guarantees to their threat model. Without a pin, the gateway
+  refuses to fetch the relay's key over plain HTTP from another machine.
 
 Pointing at these is not a claim that the project is free of vulnerabilities —
 it is a proof of concept and should be treated as one. It is context for where
