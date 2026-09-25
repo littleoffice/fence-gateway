@@ -27,6 +27,9 @@ type GenOptions struct {
 	Nonce     string // generated when empty
 	Timestamp string // RFC 3339; required
 	Scheme    SchemeMode
+	// Encoding is "" for an entity-escaped body (the relay's wrapFence) or
+	// EncodingCDATA for a CDATA body (its wrapFenceCDATA).
+	Encoding string
 	// Extra attributes are canonicalised and signed alongside the core set.
 	Extra map[string]string
 }
@@ -59,6 +62,9 @@ func Generate(priv ed25519.PrivateKey, content string, o GenOptions) (string, er
 	if o.Source != "" {
 		pairs = append(pairs, `source="`+attrEscape(o.Source)+`"`)
 	}
+	if o.Encoding != "" {
+		pairs = append(pairs, `encoding="`+attrEscape(o.Encoding)+`"`)
+	}
 	for k, val := range o.Extra {
 		pairs = append(pairs, k+`="`+attrEscape(val)+`"`)
 	}
@@ -76,7 +82,11 @@ func Generate(priv ed25519.PrivateKey, content string, o GenOptions) (string, er
 	fmt.Fprintf(&sb, `<sec:fence xmlns:sec="%s" signature="%s" %s>`,
 		attrEscape(FenceNamespace), attrEscape(sig), canonical)
 	sb.WriteString("\n")
-	sb.WriteString(contentEscape(content))
+	if o.Encoding == EncodingCDATA {
+		sb.WriteString(cdataOpen + cdataEscape(content) + cdataClose)
+	} else {
+		sb.WriteString(contentEscape(content))
+	}
 	sb.WriteString("\n</sec:fence>\n")
 	return sb.String(), nil
 }
@@ -87,6 +97,12 @@ func attrEscape(s string) string {
 		`&`, `&amp;`, `<`, `&lt;`, `>`, `&gt;`, `"`, `&quot;`,
 		"\n", " ", "\t", " ", "\r", " ",
 	).Replace(s)
+}
+
+// cdataEscape mirrors the relay's cdataEscape: split the section at every
+// "]]>" so the content cannot close it early.
+func cdataEscape(s string) string {
+	return strings.ReplaceAll(s, "]]>", "]]]]><![CDATA[>")
 }
 
 // contentEscape mirrors the relay's xmlContentEscape.

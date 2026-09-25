@@ -288,6 +288,13 @@ exactly three entities. A general XML unescaper is wrong here: content containin
 literal text `&lt;` arrives on the wire as `&amp;lt;`, and anything entity-table-driven
 turns it into `<` — different bytes than were signed, silent failure. There is a test.
 
+**Encoding.** `searxng_session_sources` carries byte-exact URLs, so the relay sends its
+body as CDATA (`encoding="cdata"`) rather than entity-escaped. The verifier branches on
+that attribute: it finds the element's end by skipping over CDATA sections (a page title
+may contain a literal `</sec:fence>`), joins the sections, and refuses any text outside
+them. An `encoding` value it does not know is refused, not guessed at. The attribute is
+signed, so flipping it breaks the fence.
+
 **Canonicalisation.** Attribute values are reconstructed from the raw wire bytes rather
 than parsed-then-re-escaped, so the canonical string is rebuilt from the same bytes the
 signer saw. Every attribute is canonicalised, including unrecognised ones — otherwise a
@@ -337,16 +344,23 @@ lifecycle question, not a gateway one.
 ## Tests
 
 ```
-fenceverify   24  round trips, escaping edge cases, tampering, forgery,
-                  smuggled attributes, duplicate attributes, rotation,
-                  both schemes, staleness, malformed input
-interop        1  verifies output from the relay's unmodified fence.go
-gateway        8  end-to-end over HTTP: pass, block, annotate, rotation
-                  recovery, pin enforcement, signature stripping
+fenceverify   round trips, escaping edge cases, CDATA bodies, tampering, forgery,
+              smuggled attributes, duplicate attributes, rotation, both schemes,
+              staleness, malformed input
+interop       16 vectors from the relay's unmodified fence.go: both layouts
+              (1.0 prose preamble, 1.1 fenced preamble) × escaped and CDATA
+              bodies, plus tampering of each
+gateway       end-to-end over HTTP: pass, block, annotate, rotation recovery,
+              pin enforcement, signature stripping; the interop vectors run
+              through the policy
 ```
 
-The interop test matters more than its size suggests: everything else verifies against
-this package's own generator, which would hide any bug symmetric across both sides.
+The interop tests matter more than their size suggests: everything else verifies against
+this package's own generator, which would hide any bug symmetric across both sides. The
+vectors live in `interop/testdata/relay` and come from the relay commit pinned in
+`RELAY_COMMIT` there. `interop/regen.sh` rebuilds them, and CI rebuilds them into a
+scratch directory on every run and tests the fresh output too. To move to a newer relay,
+change the pin, run the script, and commit the result.
 
 ## Licence
 

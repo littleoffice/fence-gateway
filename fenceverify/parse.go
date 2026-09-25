@@ -31,6 +31,17 @@ const openTagName = "<sec:fence"
 // closeTag is the literal byte sequence that ends a fence element.
 const closeTag = "</sec:fence>"
 
+// EncodingCDATA is the value of the `encoding` attribute on a fence whose body
+// is carried in CDATA sections rather than entity-escaped. The relay uses it
+// for searxng_session_sources, whose URLs must survive byte for byte. An
+// absent `encoding` means entity-escaped; any other value is refused.
+const EncodingCDATA = "cdata"
+
+const (
+	cdataOpen  = "<![CDATA["
+	cdataClose = "]]>"
+)
+
 var (
 	// ErrNoFence means no candidate fence element was found at all.
 	ErrNoFence = errors.New("no <sec:fence> element found")
@@ -50,9 +61,13 @@ type rawAttr struct {
 type parsedFence struct {
 	Attrs []rawAttr
 	// Body is the element content exactly as it appeared between the
-	// opening tag's '>' and the closing tag's '<', still XML-escaped and
-	// still carrying the generator's framing newlines.
+	// opening tag's '>' and the closing tag's '<', still encoded and still
+	// carrying the generator's framing newlines.
 	Body string
+	// Encoding is the raw value of the `encoding` attribute: "" for an
+	// entity-escaped body, EncodingCDATA for a CDATA body. It decides both
+	// where the element ends and how the signed bytes are recovered.
+	Encoding string
 	// Start and End delimit the whole element within the source string,
 	// so the caller can reason about what text sits outside the fence.
 	Start, End int
@@ -80,27 +95,77 @@ func scanFenceAt(s string, start int) (*parsedFence, error) {
 		return nil, err
 	}
 
-	bodyStart := tagEnd + 1 // one past '>'
-	rel := strings.Index(s[bodyStart:], closeTag)
-	if rel < 0 {
-		return nil, fmt.Errorf("%w: unterminated element", ErrMalformedFence)
+	var encoding string
+	for _, a := range attrs {
+		if a.Name == "encoding" {
+			encoding = a.Value
+		}
 	}
-	bodyEnd := bodyStart + rel
 
-	// Nesting is forbidden by the spec (Appendix A.4 rule 5). Because the
-	// generator escapes '<' in content, a literal opening tag inside the
-	// body can only mean the content was not escaped — a generator bug, or
-	// output from something that is not the generator. Either way, refuse.
-	if strings.Contains(s[bodyStart:bodyEnd], openTagName) {
-		return nil, fmt.Errorf("%w: nested fence in body", ErrMalformedFence)
+	bodyStart := tagEnd + 1 // one past '>'
+	var bodyEnd int
+	switch encoding {
+	case "":
+		rel := strings.Index(s[bodyStart:], closeTag)
+		if rel < 0 {
+			return nil, fmt.Errorf("%w: unterminated element", ErrMalformedFence)
+		}
+		bodyEnd = bodyStart + rel
+
+		// Nesting is forbidden by the spec (Appendix A.4 rule 5). Because the
+		// generator escapes '<' in content, a literal opening tag inside the
+		// body can only mean the content was not escaped — a generator bug, or
+		// output from something that is not the generator. Either way, refuse.
+		if strings.Contains(s[bodyStart:bodyEnd], openTagName) {
+			return nil, fmt.Errorf("%w: nested fence in body", ErrMalformedFence)
+		}
+	case EncodingCDATA:
+		// A CDATA body escapes nothing, so fetched text — a page title, say —
+		// can legitimately contain a literal <sec:fence or </sec:fence>. The
+		// element therefore ends at the first closing tag that is not inside a
+		// CDATA section, and the nesting rule does not apply: a literal tag in
+		// the body is data, and the signature still covers every byte of it.
+		end, err := cdataBodyEnd(s, bodyStart)
+		if err != nil {
+			return nil, err
+		}
+		bodyEnd = end
+	default:
+		// The body cannot be decoded, so the signed bytes cannot be recovered.
+		// The attribute is signed, but that does not make an unknown value
+		// safe to guess at.
+		return nil, fmt.Errorf("%w: unsupported encoding %q", ErrMalformedFence, encoding)
 	}
 
 	return &parsedFence{
-		Attrs: attrs,
-		Body:  s[bodyStart:bodyEnd],
-		Start: start,
-		End:   bodyEnd + len(closeTag),
+		Attrs:    attrs,
+		Body:     s[bodyStart:bodyEnd],
+		Encoding: encoding,
+		Start:    start,
+		End:      bodyEnd + len(closeTag),
 	}, nil
+}
+
+// cdataBodyEnd returns the offset of the closing tag that ends a CDATA-encoded
+// element whose body begins at i, skipping any closing tag that sits inside a
+// CDATA section.
+func cdataBodyEnd(s string, i int) (int, error) {
+	for {
+		end := strings.Index(s[i:], closeTag)
+		if end < 0 {
+			return 0, fmt.Errorf("%w: unterminated element", ErrMalformedFence)
+		}
+		open := strings.Index(s[i:], cdataOpen)
+		if open < 0 || open > end {
+			return i + end, nil
+		}
+		j := i + open + len(cdataOpen)
+		k := strings.Index(s[j:], cdataClose)
+		if k < 0 {
+			return 0, fmt.Errorf("%w: unterminated CDATA section", ErrMalformedFence)
+		}
+		i = j + k + len(cdataClose)
+	}
 }
 
 // scanAttributes reads `name="value"` pairs until the tag's closing '>'.
@@ -268,6 +333,37 @@ func unescapeContent(s string) (string, error) {
 			// emits. Its presence means the body is not what was signed.
 			return "", fmt.Errorf("%w: unexpected entity or bare '&' in content at offset %d", ErrMalformedFence, i)
 		}
+	}
+	return b.String(), nil
+}
+
+// decodeCDATA recovers the signed bytes from a CDATA-encoded body (framing
+// newlines already removed) by concatenating the text of its CDATA sections.
+//
+// The generator writes one section and splits it wherever the content holds
+// "]]>" — closing the section before the '>' and opening a new one after it —
+// so adjacent sections concatenate back to the original. Nothing else is
+// decoded: '&', '<' and '>' inside a section are literal, which is the reason
+// this encoding exists. Text outside a section was not written by the
+// generator and is refused rather than dropped, because dropping it would
+// forward bytes the signature never covered.
+func decodeCDATA(body string) (string, error) {
+	if body == "" {
+		return "", fmt.Errorf("%w: CDATA-encoded body has no CDATA section", ErrMalformedFence)
+	}
+	var b strings.Builder
+	b.Grow(len(body))
+	for body != "" {
+		if !strings.HasPrefix(body, cdataOpen) {
+			return "", fmt.Errorf("%w: text outside a CDATA section", ErrMalformedFence)
+		}
+		body = body[len(cdataOpen):]
+		k := strings.Index(body, cdataClose)
+		if k < 0 {
+			return "", fmt.Errorf("%w: unterminated CDATA section", ErrMalformedFence)
+		}
+		b.WriteString(body[:k])
+		body = body[k+len(cdataClose):]
 	}
 	return b.String(), nil
 }
