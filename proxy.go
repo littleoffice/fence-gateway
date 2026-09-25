@@ -243,8 +243,8 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 	}
 }
 
-// checkFormatDowngrade compares the format of a verified response with the one
-// the relay's key endpoint reports. The relay emits a single format, so an
+// checkFormatDowngrade refuses a response older than -fence-version, then
+// compares its format with the one the relay's key endpoint reports. The relay emits a single format, so an
 // older one on the wire is either a relay that has since been rolled back to
 // it, or a downgrade: a 1.0 response carries its preamble unsigned, where a
 // 1.1 one would have signed it. The endpoint is re-read once before deciding,
@@ -254,6 +254,14 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 // have been stripped, and fences without one come from producers that predate
 // it.
 func (g *gateway) checkFormatDowngrade(ctx context.Context, r *fv.Result) []string {
+	if len(r.Fences) > 0 && g.cfg.minFormat != "" && fv.OlderFormat(r.Fences[0].Version(), g.cfg.minFormat) {
+		got := r.Fences[0].Version()
+		if got == "" {
+			got = "none"
+		}
+		return []string{fmt.Sprintf("response is fence format %q; -fence-version requires at least %q",
+			got, g.cfg.minFormat)}
+	}
 	src, ok := g.keys.(interface{ FormatVersion() string })
 	if !ok || len(r.Fences) == 0 || r.Fences[0].Version() == "" {
 		return nil

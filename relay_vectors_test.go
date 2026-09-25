@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -139,5 +140,43 @@ func TestGatewayDowngradeAndRollback(t *testing.T) {
 	version.Store("1.0") // the relay was rolled back
 	if out, isErr := resultText(g.verify(context.Background(), "tool", "test-caller", textResult(vector(t, "v1.0-escaped-ordinary")))); isErr {
 		t.Errorf("a rolled-back relay's 1.0 response was blocked: %q", out)
+	}
+}
+
+// -fence-version sets the oldest format accepted, whatever the key endpoint
+// says. auto (the default) accepts all, leaving downgrades to the endpoint
+// check.
+func TestGatewayFenceVersion(t *testing.T) {
+	pk := vectorKey(t)
+	v10 := vector(t, "v1.0-escaped-ordinary")
+	v11 := vector(t, "v1.1-escaped-ordinary")
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	noVersion := mustFence(t, priv, "from a producer that sets no version")
+	noVersionKey := priv.Public().(ed25519.PublicKey)
+
+	cases := []struct {
+		min, name, text string
+		key             ed25519.PublicKey
+		wantBlocked     bool
+	}{
+		{"", "auto: 1.0", v10, pk, false},
+		{"", "auto: 1.1", v11, pk, false},
+		{"", "auto: no version", noVersion, noVersionKey, false},
+		{"1.0", "1.0: 1.0", v10, pk, false},
+		{"1.0", "1.0: 1.1", v11, pk, false},
+		{"1.0", "1.0: no version", noVersion, noVersionKey, true},
+		{"1.1", "1.1: 1.0", v10, pk, true},
+		{"1.1", "1.1: 1.1", v11, pk, false},
+		{"1.1", "1.1: no version", noVersion, noVersionKey, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			g := testGateway(PolicyReject, c.key)
+			g.cfg.minFormat = c.min
+			out, isErr := resultText(g.verify(context.Background(), "tool", "test-caller", textResult(c.text)))
+			if isErr != c.wantBlocked {
+				t.Errorf("blocked = %v, want %v: %q", isErr, c.wantBlocked, out)
+			}
+		})
 	}
 }

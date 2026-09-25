@@ -68,3 +68,23 @@ func TestCheckKeyTrust(t *testing.T) {
 		})
 	}
 }
+
+func TestParseFenceVersion(t *testing.T) {
+	cases := []struct {
+		in, want string
+		wantErr  bool
+	}{
+		{"auto", "", false},
+		{"", "", false},
+		{"1.0", "1.0", false},
+		{" 1.1 ", "1.1", false},
+		{"1.2", "", true},
+		{"latest", "", true},
+	}
+	for _, c := range cases {
+		got, err := parseFenceVersion(c.in)
+		if (err != nil) != c.wantErr || got != c.want {
+			t.Errorf("parseFenceVersion(%q) = %q, %v; want %q, error %v", c.in, got, err, c.want, c.wantErr)
+		}
+	}
+}
