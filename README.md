@@ -347,6 +347,21 @@ to tolerate rotation (it refetches once on failure and retains the previous key 
 the single biggest limiter on what the signatures are currently worth, and it is a relay
 lifecycle question, not a gateway one.
 
+The relay now answers it: `FENCE_SIGNING_KEY_FILE` gives it a persistent key (the
+`searxng-helm` chart mounts one via `fenceKey.existingSecret`), so a pin survives its
+restarts. **Relay persistent key + gateway `-pin` is the setup to run.** The gateway
+enforces the floor:
+
+| Key source | Startup |
+|---|---|
+| `-pin` set | starts; the transport does not matter, the key must match the pin |
+| no pin, key over HTTPS or from this machine (`localhost`, `127.0.0.1`, `::1`) | starts, with a `fence.key.unpinned` warning |
+| no pin, key over plain HTTP from another machine | **refused**: anyone on the path could serve their own key |
+
+`-tofu` does not count as a pin: its first fetch has the same problem, and it is
+remembered only until the gateway restarts. A malformed `-pin` (not 16 hex characters)
+stops startup instead of silently matching no key; upper case is accepted.
+
 ## Tests
 
 ```

@@ -109,6 +109,11 @@ func main() {
 	default:
 		fatal("unknown policy %q", cfg.policy)
 	}
+	pinned, err := normalizePin(cfg.pin)
+	if err != nil {
+		fatal("%v", err)
+	}
+	cfg.pin = pinned
 
 	// Parse HTTP-mode deployment config (MCP_PORT, downstream auth tokens, TLS)
 	// before doing any work, so a misconfiguration fails fast rather than after
@@ -132,8 +137,15 @@ func main() {
 	if ku == "" {
 		ku = deriveKeyURL(*upstream)
 	}
+	keyWarning, err := checkKeyTrust(ku, cfg.pin, cfg.tofu)
+	if err != nil {
+		fatal("%v", err)
+	}
 
 	audit := log.New(os.Stderr, "", log.LstdFlags|log.LUTC)
+	if keyWarning != "" {
+		audit.Printf("fence.key.unpinned url=%q hint=%q", ku, keyWarning)
+	}
 	keys := &fv.EndpointKeys{
 		URL:               ku,
 		PinnedFingerprint: cfg.pin,
