@@ -218,8 +218,8 @@ gateway's credential — falling back would quietly restore the collapse.
 mount secrets rather than inject them) is then the **bootstrap credential**:
 one per gateway, never one per caller. It authenticates `initialize` and
 `tools/list` at startup — both happen before any client exists — and the
-housekeeping the SDK does with no caller attached: ping, the GET event stream,
-session DELETE. No tool call uses it in pass-through mode. So a deployment with
+housekeeping the SDK does with no caller attached: ping and session
+DELETE. No tool call uses it in pass-through mode. So a deployment with
 N callers holds N + 1 secrets, not 2N.
 
 Because pass-through forwards whatever header the client sent, a JWT rides
