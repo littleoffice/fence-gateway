@@ -86,7 +86,7 @@ func main() {
 		paper    = flag.Bool("paper-scheme", false, "verify using the paper's literal Ed25519(SHA-256(C||M)) construction")
 		maxAge   = flag.Duration("max-age", 0, "reject fences older than this (0 disables)")
 		stripSig = flag.Bool("strip-signature", false, "remove signature attributes from verified fences before forwarding")
-		reqAll   = flag.Bool("require-all-fenced", false, "treat unsigned text in a tool result as a failure")
+		reqAll   = flag.Bool("require-all-fenced", false, "treat any unsigned text in a tool result as a failure, including the relay's unfenced no-results reply and error messages")
 		version  = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
