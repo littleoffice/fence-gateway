@@ -108,6 +108,17 @@ jobs:
         # the tests actually ran on this revision.
         run: go test -race -count=1 -v ./...
 
+      - name: Interop against the pinned relay
+        # The committed vectors under interop/testdata/relay already run in
+        # `go test` above. This regenerates them from the relay's own fence.go
+        # at the commit pinned in interop/testdata/relay/RELAY_COMMIT and runs
+        # the same tests on the fresh output, so the committed files cannot
+        # drift from what that relay actually emits.
+        run: |
+          interop/regen.sh "$RUNNER_TEMP/relay-vectors"
+          INTEROP_VECTORS="$RUNNER_TEMP/relay-vectors" \
+            go test -count=1 -v -run 'TestRelayVectors' . ./interop
+
       - name: govulncheck
         # Pinned instead of `@latest` so the scanner version is reproducible;
         # the advisory DATABASE is still fetched fresh at run time, so the daily

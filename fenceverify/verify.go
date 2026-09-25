@@ -96,6 +96,9 @@ type Fence struct {
 	Source    string
 	Timestamp time.Time
 	Nonce     string
+	// Encoding is "" for an entity-escaped body and EncodingCDATA for a
+	// CDATA body. It is signed like every other attribute.
+	Encoding string
 
 	// Content is the recovered plaintext: the exact bytes that were signed.
 	Content string
@@ -303,7 +306,12 @@ func (v *Verifier) verifyParsed(pf *parsedFence) (*Fence, error) {
 	if err != nil {
 		return nil, err
 	}
-	content, err := unescapeContent(inner)
+	var content string
+	if pf.Encoding == EncodingCDATA {
+		content, err = decodeCDATA(inner)
+	} else {
+		content, err = unescapeContent(inner)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -352,6 +360,8 @@ func (v *Verifier) verifyParsed(pf *parsedFence) (*Fence, error) {
 			f.Source = val
 		case "nonce":
 			f.Nonce = val
+		case "encoding":
+			f.Encoding = val
 		case "timestamp":
 			ts, err := time.Parse(time.RFC3339, val)
 			if err != nil {
