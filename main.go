@@ -235,7 +235,8 @@ func main() {
 	if _, err := g.up.session(); err != nil {
 		fatal("connect upstream %q: %v", cfg.upstream, err)
 	}
-	defer func() { _ = g.up.Close() }()
+	g.pool = &sessionPool{shared: g.up, connect: g.connectUpstream, audit: audit}
+	defer func() { _ = g.pool.Close() }()
 
 	// Build the downstream MCP server and register a verifying proxy handler
 	// for every tool the upstream exposes (see proxy.go).
