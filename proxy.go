@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -107,8 +108,11 @@ func (g *gateway) registerTools(ctx context.Context, server *mcp.Server) error {
 				// as a Go error, which the SDK surfaces as a protocol error to
 				// the client — the honest signal that the call did not reach a
 				// verified result.
+				// The SDK's error text names upstream session IDs, addresses
+				// and transport detail. That goes to the audit log; the client,
+				// and the model behind it, get a fixed message.
 				g.audit.Printf("upstream.error tool=%q identity=%q err=%q", name, identity, err)
-				return nil, err
+				return nil, errUpstreamCall
 			}
 			return g.verify(ctx, name, identity, res), nil
 		})
@@ -168,10 +172,12 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 		return res
 	}
 
-	v := &fv.Verifier{Keys: keys, Scheme: g.cfg.scheme, MaxAge: g.cfg.maxAge, RequireNonce: true}
+	v := &fv.Verifier{Keys: keys, Scheme: g.cfg.scheme, MaxAge: g.cfg.maxAge, MaxClockSkew: fenceClockSkew, RequireNonce: true}
 
 	var problems []string
 	var unverifiedErrors []*mcp.TextContent
+	// Where each verified fence starts, per text block, for -strip-signature.
+	fenceStarts := make(map[*mcp.TextContent][]int)
 	verified, total, unfenced := 0, 0, 0
 	for _, c := range res.Content {
 		tc, ok := c.(*mcp.TextContent)
@@ -233,6 +239,7 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 			continue
 		}
 		for _, f := range r.Fences {
+			fenceStarts[tc] = append(fenceStarts[tc], f.Start)
 			if t, ok := g.keys.(interface{ Touch(string) }); ok && f.Extra["kid"] != "" {
 				t.Touch(f.Extra["kid"])
 			}
@@ -292,7 +299,7 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 		}
 		g.audit.Printf("fence.ok tool=%q identity=%q blocks=%d", tool, identity, verified)
 		if g.cfg.stripSig {
-			return stripSignatures(res)
+			return stripSignatures(res, fenceStarts)
 		}
 		return res
 	}
@@ -378,6 +385,10 @@ func (g *gateway) checkFormatDowngrade(ctx context.Context, r *fv.Result) []stri
 	return []string{fmt.Sprintf("response is fence format %q but the relay reports %q: a downgrade", got, want)}
 }
 
+// errUpstreamCall is what a client sees when the call to the relay itself
+// failed.
+var errUpstreamCall = errors.New("the fence gateway could not complete the call to the upstream relay; see the gateway audit log")
+
 // relayNoResults is the relay's reply to a search with no hits: the one
 // successful result it sends without a fence.
 const relayNoResults = "No results found."
@@ -434,30 +445,58 @@ func annotate(res *mcp.CallToolResult, _ string) *mcp.CallToolResult {
 // and it is paid on every tool call. The nonce stays — the relay's awareness
 // preamble names it as the authoritative boundary, so removing it would break
 // the defence that operates in the model rather than the gateway.
-func stripSignatures(res *mcp.CallToolResult) *mcp.CallToolResult {
+//
+// Only the opening tags of fences that verified are touched, found by the
+// offsets the verifier reported. A search for ` signature="` anywhere in the
+// text used to reach into fenced page content too — double quotes are not
+// escaped there — and delete whatever lay between that and the next quote.
+func stripSignatures(res *mcp.CallToolResult, starts map[*mcp.TextContent][]int) *mcp.CallToolResult {
 	for _, c := range res.Content {
-		if tc, ok := c.(*mcp.TextContent); ok {
-			tc.Text = stripSigAttr(tc.Text)
+		if tc, ok := c.(*mcp.TextContent); ok && len(starts[tc]) > 0 {
+			tc.Text = stripSigAttr(tc.Text, starts[tc])
 		}
 	}
 	return res
 }
 
-// stripSigAttr removes ` signature="..."` occurrences from opening tags.
-func stripSigAttr(s string) string {
-	var b strings.Builder
-	for {
-		i := strings.Index(s, ` signature="`)
+// stripSigAttr removes the signature attribute from the opening tags that
+// begin at the given offsets of s.
+func stripSigAttr(s string, starts []int) string {
+	sorted := append([]int(nil), starts...)
+	sort.Sort(sort.Reverse(sort.IntSlice(sorted))) // back to front, so offsets stay valid
+	const attr = ` signature="`
+	for _, start := range sorted {
+		end := openingTagEnd(s, start)
+		if end < 0 {
+			continue
+		}
+		i := strings.Index(s[start:end], attr)
 		if i < 0 {
-			b.WriteString(s)
-			return b.String()
+			continue
 		}
-		j := strings.Index(s[i+len(` signature="`):], `"`)
+		i += start
+		j := strings.IndexByte(s[i+len(attr):end], '"')
 		if j < 0 {
-			b.WriteString(s)
-			return b.String()
+			continue
 		}
-		b.WriteString(s[:i])
-		s = s[i+len(` signature="`)+j+1:]
+		s = s[:i] + s[i+len(attr)+j+1:]
 	}
+	return s
+}
+
+// openingTagEnd returns the index of the '>' closing the tag that starts at
+// start, skipping any '>' inside a quoted attribute value, or -1.
+func openingTagEnd(s string, start int) int {
+	inQuote := false
+	for k := start; k < len(s); k++ {
+		switch s[k] {
+		case '"':
+			inQuote = !inQuote
+		case '>':
+			if !inQuote {
+				return k
+			}
+		}
+	}
+	return -1
 }

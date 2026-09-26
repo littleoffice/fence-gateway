@@ -20,8 +20,8 @@ MCP client ──stdio──▶ fence-gateway ──http──▶ mcp-searxng-re
                             └── verify · apply policy · audit
 ```
 
-Status: proof of concept. 30 tests, including verification against output from
-the relay's unmodified `fence.go`.
+Status: proof of concept. Verified against output from the relay's unmodified
+`fence.go` (see [Tests](#tests)).
 
 ## Components
 
@@ -281,13 +281,13 @@ runtime environment, never baked into the image:
 # stdio
 docker run --rm -i \
   -e UPSTREAM_MCP_TOKEN=… \
-  ghcr.io/littleoffice/promptfence-gateway:latest \
+  ghcr.io/littleoffice/fence-gateway:latest \
   -upstream https://relay.internal:8080/mcp -policy reject -pin 5fb07c6222c503de
 
 # Streamable HTTP (remote)
 docker run --rm -p 9090:9090 \
   -e MCP_PORT=9090 -e MCP_AUTH_TOKEN=… -e UPSTREAM_MCP_TOKEN=… \
-  ghcr.io/littleoffice/promptfence-gateway:latest \
+  ghcr.io/littleoffice/fence-gateway:latest \
   -upstream https://relay.internal:8080/mcp -policy reject -pin 5fb07c6222c503de
 ```
 
@@ -383,7 +383,11 @@ would then be blocked.
 
 **Signatures carry no freshness.** A valid fence is valid forever. Anything that caches
 or replays tool output can feed stale content into a live session with a perfect
-signature. `-max-age` bounds it against the fence timestamp.
+signature. `-max-age` bounds it against the fence timestamp: 10 minutes by default,
+since the relay stamps each fence when it answers. A fence dated more than two minutes
+ahead of the gateway's clock is refused too, so it cannot outlive the bound. Both depend
+on the relay's and the gateway's clocks roughly agreeing; `-max-age 0` turns the age
+check off.
 
 **Ephemeral keys bound what verification proves.** Fetching the key from the same server
 that produced the fence is *not* circular under the paper's threat model (§2.2) — the

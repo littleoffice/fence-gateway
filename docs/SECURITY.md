@@ -125,8 +125,10 @@ depth in the README):
 - **Every attribute is canonicalised, including unrecognised ones**, so a
   smuggled attribute cannot ride along outside the signature while remaining
   visible to the model.
-- **Zero third-party dependencies.** The verification path is implemented against
-  the Go standard library's `crypto/ed25519` and `crypto/sha256`. See
+- **A standard-library verification core.** `fenceverify`, which decides whether
+  a fence is trusted, uses only the Go standard library (`crypto/ed25519`,
+  `crypto/sha256`). The transport (the MCP SDK) and OAuth verification
+  (`go-oidc`, `go-jose`) are third-party. See
   [supply-chain.md](supply-chain.md#dependency-inventory).
 - **Key pinning (`-pin`), staleness bounds (`-max-age`), nonce
   enforcement, and an all-fenced check (`-require-all-fenced`)** let an operator

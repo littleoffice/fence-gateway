@@ -3,7 +3,7 @@
 #
 # The build is reproducible relative to:
 #   - the base-image digest pinned in the Dockerfile,
-#   - the committed go.mod (there is no go.sum: no external dependencies),
+#   - the committed go.mod and go.sum (every module pinned by hash),
 #   - SERVER_VERSION (passed in as --build-arg),
 #   - SOURCE_DATE_EPOCH (passed in as --build-arg AND --timestamp).
 #
