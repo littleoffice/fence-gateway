@@ -94,22 +94,58 @@ type EndpointKeys struct {
 	// thereafter. Ignored when PinnedFingerprint is set.
 	TOFU bool
 
-	// RetainPrevious keeps the prior key valid alongside the new one after
-	// a rotation, per §7.4.1's requirement that both verify during the
-	// rotation window.
+	// RetainPrevious keeps keys valid after the endpoint has moved on to a
+	// new one, per §7.4.1's requirement that old and new both verify during
+	// a rotation window. Fences name the key that signed them (kid), so a
+	// verifier holding several picks the right one rather than trying all.
+	// That matters with several relay replicas on keys of their own: the
+	// endpoint answers from whichever replica it reaches, and a verifier
+	// that kept only the latest key or two would keep swapping them and
+	// reject genuine fences at random. Without RetainPrevious only the
+	// latest key is kept.
 	RetainPrevious bool
 
-	// OnKeyChange is called whenever the active key changes. This is an
-	// audit event, not a debug line: with the relay's per-restart key
-	// lifecycle it is the only signal distinguishing "the relay restarted"
-	// from "something else is answering on that address".
+	// MaxKeys bounds how many keys are retained; the least recently served
+	// goes first. Zero means DefaultMaxKeys.
+	MaxKeys int
+
+	// KeyTTL drops a retained key the endpoint has not served for this
+	// long, so a key that has left service does not stay trusted
+	// indefinitely. The key the endpoint served last is never dropped. Zero
+	// means keys are kept until MaxKeys pushes them out.
+	KeyTTL time.Duration
+
+	// MinRefreshInterval limits fetching. A Refresh sooner than this after
+	// the last fetch is a no-op returning (false, nil), and RefreshFor looks
+	// for any one key at most once per interval. So a run of fences naming a
+	// key the endpoint does not serve — a pin mismatch, a misconfigured
+	// replica — costs one round of fetches, not one per call, while keys of
+	// different replicas are each looked for without waiting on the others.
+	// Zero disables the limit.
+	MinRefreshInterval time.Duration
+
+	// OnKeyChange is called when the endpoint serves a key not held before.
+	// This is an audit event, not a debug line: with the relay's per-restart
+	// key lifecycle it is the only signal distinguishing "the relay
+	// restarted" from "something else is answering on that address".
 	OnKeyChange func(old, new string)
 
-	mu      sync.Mutex
-	current []ed25519.PublicKey
-	fpSeen  string
-	fetched time.Time
-	version string
+	mu        sync.Mutex
+	ring      map[string]*heldKey  // by fingerprint
+	fpSeen    string               // fingerprint the endpoint served last
+	firstSeen string               // TOFU: the first fingerprint ever served
+	fetched   time.Time            // last fetch attempt
+	sought    map[string]time.Time // RefreshFor: when each key was last looked for
+	version   string
+}
+
+// DefaultMaxKeys is how many keys EndpointKeys retains when MaxKeys is zero:
+// enough for a handful of relay replicas plus a rotation.
+const DefaultMaxKeys = 8
+
+type heldKey struct {
+	key    ed25519.PublicKey
+	served time.Time // last time the endpoint served it
 }
 
 type fenceKeyDoc struct {
@@ -127,22 +163,124 @@ func (e *EndpointKeys) client() *http.Client {
 }
 
 func (e *EndpointKeys) Keys(ctx context.Context) ([]ed25519.PublicKey, error) {
-	e.mu.Lock()
-	have := len(e.current) > 0
-	cur := append([]ed25519.PublicKey(nil), e.current...)
-	e.mu.Unlock()
-	if have {
-		return cur, nil
+	if ks := e.held(); len(ks) > 0 {
+		return ks, nil
 	}
 	if _, err := e.Refresh(ctx); err != nil {
 		return nil, err
 	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return append([]ed25519.PublicKey(nil), e.current...), nil
+	return e.held(), nil
 }
 
+// held returns the retained keys, the one served last first, after dropping
+// any past KeyTTL.
+func (e *EndpointKeys) held() []ed25519.PublicKey {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.expireLocked(time.Now())
+	out := make([]ed25519.PublicKey, 0, len(e.ring))
+	if k, ok := e.ring[e.fpSeen]; ok {
+		out = append(out, k.key)
+	}
+	for fp, k := range e.ring {
+		if fp != e.fpSeen {
+			out = append(out, k.key)
+		}
+	}
+	return out
+}
+
+func (e *EndpointKeys) expireLocked(now time.Time) {
+	if e.KeyTTL <= 0 {
+		return
+	}
+	for fp, k := range e.ring {
+		if fp != e.fpSeen && now.Sub(k.served) > e.KeyTTL {
+			delete(e.ring, fp)
+		}
+	}
+}
+
+// Refresh fetches the key the endpoint currently serves and adds it to the
+// retained set. It reports whether that key is one not held before.
 func (e *EndpointKeys) Refresh(ctx context.Context) (bool, error) {
+	changed, _, err := e.fetch(ctx, true)
+	return changed, err
+}
+
+// refreshForAttempts is how many fetches RefreshFor makes looking for one key.
+// Behind a load balancer each fetch reaches one relay replica, so a single
+// fetch finds a given replica's key only some of the time.
+const refreshForAttempts = 4
+
+// RefreshFor fetches until the key with fingerprint kid is held, up to
+// refreshForAttempts times, and reports whether it is held afterwards. Each
+// key is looked for at most once per MinRefreshInterval: a burst of fences
+// naming an unknown key costs one round of fetches, not one per fence.
+func (e *EndpointKeys) RefreshFor(ctx context.Context, kid string) (bool, error) {
+	if e.holds(kid) {
+		return true, nil
+	}
+	e.mu.Lock()
+	now := time.Now()
+	if last, ok := e.sought[kid]; ok && e.MinRefreshInterval > 0 && now.Sub(last) < e.MinRefreshInterval {
+		e.mu.Unlock()
+		return false, nil
+	}
+	if e.sought == nil || len(e.sought) >= maxSought {
+		e.sought = make(map[string]time.Time)
+	}
+	e.sought[kid] = now
+	e.mu.Unlock()
+
+	for i := 0; i < refreshForAttempts; i++ {
+		if _, _, err := e.fetch(ctx, false); err != nil {
+			return e.holds(kid), err
+		}
+		if e.holds(kid) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// maxSought bounds the memory of keys RefreshFor has looked for.
+const maxSought = 256
+
+// Touch marks the key with fingerprint kid as in use, so KeyTTL counts from
+// now. A verifier calls it for keys that just verified a fence: behind a load
+// balancer the endpoint may not serve a replica's key again for a long time,
+// and a key still signing traffic should not expire for that.
+func (e *EndpointKeys) Touch(kid string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if k, ok := e.ring[kid]; ok {
+		k.served = time.Now()
+	}
+}
+
+func (e *EndpointKeys) holds(kid string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, ok := e.ring[kid]
+	return ok
+}
+
+// fetch performs one fetch of the endpoint. With throttle set it does nothing
+// within MinRefreshInterval of the last one, and reports fetched=false.
+func (e *EndpointKeys) fetch(ctx context.Context, throttle bool) (changed, fetched bool, err error) {
+	e.mu.Lock()
+	if throttle && e.MinRefreshInterval > 0 && !e.fetched.IsZero() && time.Since(e.fetched) < e.MinRefreshInterval {
+		e.mu.Unlock()
+		return false, false, nil
+	}
+	e.fetched = time.Now()
+	e.mu.Unlock()
+	changed, err = e.fetchOnce(ctx)
+	return changed, true, err
+}
+
+func (e *EndpointKeys) fetchOnce(ctx context.Context) (bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.URL, nil)
 	if err != nil {
 		return false, err
@@ -184,22 +322,49 @@ func (e *EndpointKeys) Refresh(ctx context.Context) (bool, error) {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.TOFU && e.fpSeen != "" && e.fpSeen != fp {
-		return false, fmt.Errorf("fence key changed from %q to %q and TOFU pinning is on", e.fpSeen, fp)
+	if e.TOFU && e.firstSeen != "" && e.firstSeen != fp {
+		return false, fmt.Errorf("fence key changed from %q to %q and TOFU pinning is on", e.firstSeen, fp)
 	}
-	changed := e.fpSeen != fp
-	if changed && e.fpSeen != "" && e.OnKeyChange != nil {
+	if e.firstSeen == "" {
+		e.firstSeen = fp
+	}
+	now := time.Now()
+	if e.ring == nil {
+		e.ring = make(map[string]*heldKey)
+	}
+	_, held := e.ring[fp]
+	if !held && e.fpSeen != "" && e.OnKeyChange != nil {
 		e.OnKeyChange(e.fpSeen, fp)
 	}
-	if changed && e.RetainPrevious && len(e.current) > 0 {
-		e.current = append([]ed25519.PublicKey{pk}, e.current[0])
-	} else {
-		e.current = []ed25519.PublicKey{pk}
+	if !e.RetainPrevious {
+		clear(e.ring)
 	}
+	e.ring[fp] = &heldKey{key: pk, served: now}
 	e.fpSeen = fp
-	e.fetched = time.Now()
 	e.version = doc.Version
-	return changed, nil
+	e.expireLocked(now)
+	e.trimLocked()
+	return !held, nil
+}
+
+// trimLocked drops the least recently served keys beyond MaxKeys.
+func (e *EndpointKeys) trimLocked() {
+	max := e.MaxKeys
+	if max <= 0 {
+		max = DefaultMaxKeys
+	}
+	for len(e.ring) > max {
+		oldest := ""
+		for fp, k := range e.ring {
+			if fp != e.fpSeen && (oldest == "" || k.served.Before(e.ring[oldest].served)) {
+				oldest = fp
+			}
+		}
+		if oldest == "" {
+			return
+		}
+		delete(e.ring, oldest)
+	}
 }
 
 // FormatVersion is the fence format version the endpoint reported at the last

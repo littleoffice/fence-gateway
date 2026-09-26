@@ -150,15 +150,15 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 			continue
 		}
 
-		// A verification failure is exactly what a key rotation looks like,
-		// and the relay rotates on every restart. Refetch once and retry
-		// before concluding the content is hostile.
-		if len(r.Fences) == 0 && len(r.Rejections) > 0 {
-			if changed, rerr := g.keys.Refresh(ctx); rerr == nil && changed {
-				if k2, kerr := g.keys.Keys(ctx); kerr == nil {
-					v.Keys = k2
-					r, _ = v.Verify(tc.Text)
-				}
+		// A fence naming a key the gateway does not hold is a relay replica
+		// or rotation it has not seen yet: fetch and retry before concluding
+		// anything. Fences without a kid cannot say, so for them any failure
+		// is treated the same way. The key source limits how often this
+		// fetches.
+		if g.fetchMissingKeys(ctx, r) {
+			if k2, kerr := g.keys.Keys(ctx); kerr == nil {
+				v.Keys = k2
+				r, _ = v.Verify(tc.Text)
 			}
 		}
 
@@ -172,6 +172,9 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 			continue
 		}
 		for _, f := range r.Fences {
+			if t, ok := g.keys.(interface{ Touch(string) }); ok && f.Extra["kid"] != "" {
+				t.Touch(f.Extra["kid"])
+			}
 			g.audit.Printf("fence.verified tool=%q identity=%q rating=%s type=%s source=%q nonce=%s bytes=%d",
 				tool, identity, f.Rating, f.Type, f.Source, f.Nonce, len(f.Content))
 		}
@@ -241,6 +244,40 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 	default:
 		return res
 	}
+}
+
+// fetchMissingKeys fetches keys a failed verification suggests are missing,
+// and reports whether it gained any, so the caller verifies again.
+//
+// A fence naming a key the gateway does not hold is a relay replica or a
+// rotation it has not seen yet, and a key source that can look for one key
+// (EndpointKeys.RefreshFor) is asked for exactly that. Fences without a kid
+// cannot say which key they need, so for them any all-failed verification
+// triggers a plain refresh — what a rotation looked like before the relay
+// named its keys. The key source limits how often either one fetches.
+func (g *gateway) fetchMissingKeys(ctx context.Context, r *fv.Result) bool {
+	gained := false
+	byKid, canSeek := g.keys.(interface {
+		RefreshFor(context.Context, string) (bool, error)
+	})
+	for _, rj := range r.Rejections {
+		if rj.UnknownKey == "" {
+			continue
+		}
+		if canSeek {
+			if held, err := byKid.RefreshFor(ctx, rj.UnknownKey); err == nil && held {
+				gained = true
+			}
+		} else if changed, err := g.keys.Refresh(ctx); err == nil && changed {
+			gained = true
+		}
+	}
+	if !gained && len(r.Fences) == 0 && len(r.Rejections) > 0 {
+		if changed, err := g.keys.Refresh(ctx); err == nil && changed {
+			gained = true
+		}
+	}
+	return gained
 }
 
 // checkFormatDowngrade refuses a response older than -fence-version, then

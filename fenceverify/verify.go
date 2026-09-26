@@ -74,6 +74,17 @@ var (
 	ErrSchemaViolation = errors.New("fence schema violation")
 )
 
+// UnknownKeyError means the fence names, in its kid attribute, a key the
+// verifier does not hold. That is not the same as a bad signature: it is what
+// a relay replica or a rotation the verifier has not seen yet looks like, and
+// the remedy is to fetch the key, not to raise an alarm. A forged fence
+// naming a key it was not signed with still fails once that key is held.
+type UnknownKeyError struct{ Kid string }
+
+func (e *UnknownKeyError) Error() string {
+	return fmt.Sprintf("fence names key %q, which the verifier does not hold", e.Kid)
+}
+
 // Trust ratings (paper §4.2).
 const (
 	RatingTrusted          = "trusted"
@@ -148,6 +159,9 @@ type Result struct {
 type Rejection struct {
 	Offset int
 	Reason string
+	// UnknownKey is the kid the candidate named when it was rejected only
+	// because that key is not held; empty otherwise.
+	UnknownKey string
 	// Snippet is a short, truncated excerpt for the audit log. It is
 	// attacker-controlled text and must never be interpolated into a prompt.
 	Snippet string
@@ -230,9 +244,12 @@ func (v *Verifier) Verify(s string) (*Result, error) {
 		f, err := v.verifyParsed(pf)
 		if err != nil {
 			if claims {
-				res.Rejections = append(res.Rejections, Rejection{
-					Offset: off, Reason: err.Error(), Snippet: snippet(s, off),
-				})
+				rj := Rejection{Offset: off, Reason: err.Error(), Snippet: snippet(s, off)}
+				var uk *UnknownKeyError
+				if errors.As(err, &uk) {
+					rj.UnknownKey = uk.Kid
+				}
+				res.Rejections = append(res.Rejections, rj)
 			} else {
 				res.Ignored = append(res.Ignored, off)
 			}
@@ -330,8 +347,24 @@ func (v *Verifier) verifyParsed(pf *parsedFence) (*Fence, error) {
 		return nil, err
 	}
 
+	// The fence names its key. Check against that one rather than trying
+	// every key held: "signed by a key I do not have" and "forged" are
+	// different findings. kid is signed, so naming the wrong key cannot make
+	// a fence verify — it only picks which key the check is made with.
+	keys := v.Keys
+	if kid := byName["kid"]; kid != "" {
+		keys = nil
+		for _, pk := range v.Keys {
+			if len(pk) == ed25519.PublicKeySize && Fingerprint(pk) == kid {
+				keys = append(keys, pk)
+			}
+		}
+		if len(keys) == 0 {
+			return nil, &UnknownKeyError{Kid: kid}
+		}
+	}
 	ok := false
-	for _, pk := range v.Keys {
+	for _, pk := range keys {
 		if len(pk) == ed25519.PublicKeySize && ed25519.Verify(pk, msg, sig) {
 			ok = true
 			break

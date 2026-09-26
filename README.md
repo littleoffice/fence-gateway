@@ -380,6 +380,14 @@ enforces the floor:
 | no pin, key over HTTPS or from this machine (`localhost`, `127.0.0.1`, `::1`) | starts, with a `fence.key.unpinned` warning |
 | no pin, key over plain HTTP from another machine | **refused**: anyone on the path could serve their own key |
 
+Each fence names the key that signed it (`kid`), and the gateway checks it against that
+key alone. So "signed by a key I do not hold" and "forged" are told apart in the audit
+log. A fence naming a key the gateway does not have (a new rotation, or another relay
+replica) makes it fetch the endpoint until that key turns up, up to four times, at most
+once per key every two seconds. Keys the relay has stopped using drop out after a day.
+Several replicas on keys of their own therefore work, but they cannot be pinned: a pin
+accepts one key. Give all replicas the same key to pin them.
+
 `-tofu` does not count as a pin: its first fetch has the same problem, and it is
 remembered only until the gateway restarts. A malformed `-pin` (not 16 hex characters)
 stops startup instead of silently matching no key; upper case is accepted.
