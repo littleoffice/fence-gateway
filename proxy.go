@@ -74,6 +74,9 @@ func (g *gateway) registerTools(ctx context.Context, server *mcp.Server) error {
 			// Forward the raw arguments verbatim. CallToolParamsRaw.Arguments
 			// is json.RawMessage, which re-marshals to the exact bytes the
 			// client sent, so no argument is reinterpreted in transit.
+			// Name the conversation, so a stateless relay keeps its fetch
+			// history per conversation (upstream.go).
+			ctx = withConversation(ctx, conversationID(req))
 			res, err := g.up.CallTool(ctx, &mcp.CallToolParams{
 				Name:      name,
 				Arguments: req.Params.Arguments,

@@ -357,12 +357,26 @@ func (a *authTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if authz == "" && a.token != "" {
 		authz = "Bearer " + a.token
 	}
-	if authz == "" {
+	// A stateless relay issues no session, so the SDK sends no
+	// Mcp-Session-Id, and the relay reads the header as the client's
+	// conversation ID to keep fetch histories apart. Set it from the
+	// conversation the call belongs to. A stateful relay's requests always
+	// carry the session it issued, and that is never overwritten.
+	conv := conversationFrom(r.Context())
+	if r.Header.Get("Mcp-Session-Id") != "" {
+		conv = ""
+	}
+	if authz == "" && conv == "" {
 		return a.base.RoundTrip(r)
 	}
 	// Clone before mutating: RoundTrip must not modify the caller's request.
 	r2 := r.Clone(r.Context())
-	r2.Header.Set("Authorization", authz)
+	if authz != "" {
+		r2.Header.Set("Authorization", authz)
+	}
+	if conv != "" {
+		r2.Header.Set("Mcp-Session-Id", conv)
+	}
 	return a.base.RoundTrip(r2)
 }
 

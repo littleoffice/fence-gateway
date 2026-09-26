@@ -102,3 +102,58 @@ func (u *upstreamSession) Close() error {
 func sessionGone(err error) bool {
 	return errors.Is(err, mcp.ErrSessionMissing) || errors.Is(err, mcp.ErrConnectionClosed)
 }
+
+// ── Conversations ────────────────────────────────────────────────────────────
+//
+// The relay files each caller's fetch history under identity and session, and
+// searxng_session_sources promises "current session only". A stateless relay
+// issues no sessions; it reads the conversation ID from the Mcp-Session-Id
+// request header instead. Through a gateway that header was never set, so all
+// conversations of one caller shared one history: the tool listed pages read
+// in the caller's other chats. authTransport now sets it from the conversation
+// the call belongs to.
+
+// maxConversationIDLen and the character check in conversationID match what
+// the relay accepts as a client-asserted session ID.
+const maxConversationIDLen = 128
+
+// conversationID identifies the downstream conversation a tool call belongs
+// to: the gateway's own session ID when it issues them, otherwise the
+// Mcp-Session-Id header the client sent (stateless gateway), if it is safe to
+// carry. "" when there is none — stdio, or a client that sends no ID.
+func conversationID(req *mcp.CallToolRequest) string {
+	if req.Session != nil {
+		if id := req.Session.ID(); id != "" {
+			return id
+		}
+	}
+	if req.Extra == nil {
+		return ""
+	}
+	id := req.Extra.Header.Get("Mcp-Session-Id")
+	if id == "" || len(id) > maxConversationIDLen {
+		return ""
+	}
+	for i := 0; i < len(id); i++ {
+		if id[i] < '!' || id[i] > '~' {
+			return ""
+		}
+	}
+	return id
+}
+
+// conversationKey types the context value carrying the conversation ID through
+// to the upstream request.
+type conversationKey struct{}
+
+func withConversation(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, conversationKey{}, id)
+}
+
+func conversationFrom(ctx context.Context) string {
+	v, _ := ctx.Value(conversationKey{}).(string)
+	return v
+}
