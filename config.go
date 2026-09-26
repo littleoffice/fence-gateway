@@ -147,6 +147,19 @@ func upstreamAuthFromEnv(flagToken string) (upstreamAuth, error) {
 	return u, nil
 }
 
+// passthroughExposure returns the startup reminder for passthrough mode, or ""
+// for any other. In passthrough a caller's gateway token is also a relay token,
+// so a caller who can reach the relay directly gets its output unverified. The
+// gateway cannot see the network, so it says so once, where an operator reads.
+func passthroughExposure(ua upstreamAuth) string {
+	if !ua.passthrough() {
+		return ""
+	}
+	return "callers' tokens also work at the relay: make sure only this gateway can reach it " +
+		"(firewall, container network or NetworkPolicy), or use UPSTREAM_MCP_AUTH_MODE=exchange. " +
+		"See docs/deployment.md"
+}
+
 // multiCaller reports whether more than one caller can reach the gateway: more
 // than one static token, or OAuth, where every subject is a caller of its own.
 func (c httpConfig) multiCaller() bool {

@@ -219,6 +219,10 @@ decides which of those two things happens.
 
 The dashed line is a caller trying to reach the relay directly with their own token.
 
+Whatever the mode, **only the gateway may reach the relay**; in `passthrough` that is what
+keeps callers from skipping it. [docs/deployment.md](docs/deployment.md) shows how, for
+Podman/Compose and for the `searxng-helm` chart.
+
 **`exchange`** closes the gap `passthrough` leaves. In `passthrough` the token a caller
 holds for the gateway also works at the relay, so a caller who can reach the relay can skip
 the gateway and its checks. In `exchange` the gateway trades each caller's OAuth token at the

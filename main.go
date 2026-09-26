@@ -234,6 +234,9 @@ func main() {
 	// startup log where an operator will see it.
 	audit.Printf("upstream.auth mode=%s bootstrap=%t downstream_identities=%d stateless=%t",
 		ua.mode, ua.token != "", len(hc.authTokens), hc.stateless)
+	if w := passthroughExposure(ua); w != "" {
+		audit.Printf("upstream.auth.passthrough hint=%q", w)
+	}
 	// Reached only when static was chosen on purpose: checkSharedRelayIdentity
 	// refuses the unchosen case before this point.
 	if !ua.perCaller() && hc.multiCaller() {

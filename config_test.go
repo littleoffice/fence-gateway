@@ -163,3 +163,19 @@ func TestUpstreamAuthModeExplicit(t *testing.T) {
 		}
 	}
 }
+
+// Passthrough, and only passthrough, reminds the operator at startup that the
+// relay must be reachable from the gateway alone.
+func TestPassthroughExposure(t *testing.T) {
+	for mode, want := range map[upstreamAuthMode]bool{
+		upstreamAuthStatic: false, upstreamAuthPassthrough: true, upstreamAuthExchange: false,
+	} {
+		got := passthroughExposure(upstreamAuth{mode: mode})
+		if (got != "") != want {
+			t.Errorf("%s: warning %q, want one: %v", mode, got, want)
+		}
+		if want && !strings.Contains(got, "docs/deployment.md") {
+			t.Errorf("%s: warning does not point at the guide: %q", mode, got)
+		}
+	}
+}
