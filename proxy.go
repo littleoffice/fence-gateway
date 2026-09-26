@@ -23,6 +23,17 @@ type gateway struct {
 	keys  fv.KeySource
 	audit *log.Logger
 	up    *upstreamSession
+	// pool, when set, gives each downstream conversation a relay session of
+	// its own; nil means every call uses up.
+	pool *sessionPool
+}
+
+// upstreamFor returns the relay session a call from this conversation uses.
+func (g *gateway) upstreamFor(identity, conversation string, ended *mcp.ServerSession) *upstreamSession {
+	if g.pool == nil || conversation == "" {
+		return g.up
+	}
+	return g.pool.forConversation(identity+"\x00"+conversation, ended)
 }
 
 // registerTools enumerates the upstream relay's tools and installs a verifying
@@ -74,10 +85,11 @@ func (g *gateway) registerTools(ctx context.Context, server *mcp.Server) error {
 			// Forward the raw arguments verbatim. CallToolParamsRaw.Arguments
 			// is json.RawMessage, which re-marshals to the exact bytes the
 			// client sent, so no argument is reinterpreted in transit.
-			// Name the conversation, so a stateless relay keeps its fetch
-			// history per conversation (upstream.go).
-			ctx = withConversation(ctx, conversationID(req))
-			res, err := g.up.CallTool(ctx, &mcp.CallToolParams{
+			// Each conversation reaches the relay as its own session, so the
+			// relay keeps its fetch history per conversation (upstream.go).
+			conv := conversationID(req)
+			ctx = withConversation(ctx, conv)
+			res, err := g.upstreamFor(identity, conv, req.Session).CallTool(ctx, &mcp.CallToolParams{
 				Name:      name,
 				Arguments: req.Params.Arguments,
 			})

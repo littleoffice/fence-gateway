@@ -38,7 +38,13 @@ func (r *conversationRig) toolCallSessions() []string {
 	return append([]string(nil), r.calls...)
 }
 
-func startConversationRig(t *testing.T, statelessRelay bool) *conversationRig {
+func (r *conversationRig) deletedSessions() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.deleted...)
+}
+
+func startConversationRig(t *testing.T, statelessRelay, pooled bool) *conversationRig {
 	t.Helper()
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	rig := &conversationRig{token: strings.Repeat("t", 40)}
@@ -81,7 +87,12 @@ func startConversationRig(t *testing.T, statelessRelay bool) *conversationRig {
 	if _, err := g.up.session(); err != nil {
 		t.Fatalf("connect upstream: %v", err)
 	}
-	t.Cleanup(func() { _ = g.up.Close() })
+	if pooled {
+		g.pool = &sessionPool{shared: g.up, connect: g.connectUpstream, audit: audit}
+		t.Cleanup(func() { _ = g.pool.Close() })
+	} else {
+		t.Cleanup(func() { _ = g.up.Close() })
+	}
 
 	dSrv := mcp.NewServer(&mcp.Implementation{Name: "fence-gateway", Version: "test"}, nil)
 	if err := g.registerTools(context.Background(), dSrv); err != nil {
@@ -140,7 +151,7 @@ func assertOneRelaySessionPerConversation(t *testing.T, got []string) {
 // A stateless relay issues no sessions and reads the conversation ID from the
 // Mcp-Session-Id header. The gateway sets it from the downstream conversation.
 func TestStatelessRelayGetsConversationID(t *testing.T) {
-	rig := startConversationRig(t, true)
+	rig := startConversationRig(t, true, false)
 	a, b := rig.client(t), rig.client(t)
 	defer func() { _ = a.Close() }()
 	defer func() { _ = b.Close() }()

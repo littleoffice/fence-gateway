@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -103,19 +104,135 @@ func sessionGone(err error) bool {
 	return errors.Is(err, mcp.ErrSessionMissing) || errors.Is(err, mcp.ErrConnectionClosed)
 }
 
-// ── Conversations ────────────────────────────────────────────────────────────
+// ── One relay session per conversation ───────────────────────────────────────
 //
 // The relay files each caller's fetch history under identity and session, and
-// searxng_session_sources promises "current session only". A stateless relay
-// issues no sessions; it reads the conversation ID from the Mcp-Session-Id
-// request header instead. Through a gateway that header was never set, so all
-// conversations of one caller shared one history: the tool listed pages read
-// in the caller's other chats. authTransport now sets it from the conversation
-// the call belongs to.
+// searxng_session_sources promises "current session only". Through a gateway
+// holding one upstream session for everyone, every conversation of one caller
+// shared a single history: the tool listed pages read in the caller's other
+// chats, and a model could cite them as read in this one.
+//
+// So against a stateful relay each downstream conversation gets a relay
+// session of its own. A stateless relay issues no sessions to split; it reads
+// the conversation ID from the Mcp-Session-Id request header instead, which
+// authTransport sets from the conversation the call belongs to.
 
-// maxConversationIDLen and the character check in conversationID match what
-// the relay accepts as a client-asserted session ID.
-const maxConversationIDLen = 128
+const (
+	// maxPooledSessions bounds the relay sessions held at once. The relay
+	// refuses new sessions past its own cap (1000), and every one held here
+	// counts against it.
+	maxPooledSessions = 256
+	// pooledSessionIdle closes a conversation's relay session after this long
+	// unused. A later call from that conversation opens a new one, starting a
+	// fresh history on the relay.
+	pooledSessionIdle = 30 * time.Minute
+	// maxConversationIDLen and the character check below match what the
+	// relay accepts as a client-asserted session ID.
+	maxConversationIDLen = 128
+)
+
+// sessionPool hands out the relay session for a conversation.
+type sessionPool struct {
+	shared  *upstreamSession // stdio, calls with no conversation, stateless relays
+	connect func(context.Context) (*mcp.ClientSession, error)
+	audit   *log.Logger
+
+	mu     sync.Mutex
+	byConv map[string]*pooledSession
+}
+
+type pooledSession struct {
+	up   *upstreamSession
+	used time.Time
+}
+
+// forConversation returns the relay session for the conversation identified
+// by key (the caller's identity and the conversation ID), opening one if
+// needed. ended, when not nil, is the downstream session: its relay session is
+// closed when it ends.
+func (p *sessionPool) forConversation(key string, ended *mcp.ServerSession) *upstreamSession {
+	if key == "" {
+		return p.shared
+	}
+	// A relay that issued the shared session no ID is stateless: there are
+	// no sessions to keep apart, and the conversation travels as a header.
+	if s, err := p.shared.session(); err != nil || s.ID() == "" {
+		return p.shared
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	p.evictLocked(now)
+	if e, ok := p.byConv[key]; ok {
+		e.used = now
+		return e.up
+	}
+	up := &upstreamSession{connect: p.connect, audit: p.audit}
+	if p.byConv == nil {
+		p.byConv = make(map[string]*pooledSession)
+	}
+	p.byConv[key] = &pooledSession{up: up, used: now}
+	if ended != nil {
+		go func() {
+			_ = ended.Wait()
+			p.release(key, up)
+		}()
+	}
+	return up
+}
+
+// release closes the relay session held for key, if it is still up.
+func (p *sessionPool) release(key string, up *upstreamSession) {
+	p.mu.Lock()
+	e, ok := p.byConv[key]
+	if ok && e.up == up {
+		delete(p.byConv, key)
+	}
+	p.mu.Unlock()
+	if ok && e.up == up {
+		_ = up.Close()
+	}
+}
+
+// evictLocked closes sessions idle past pooledSessionIdle, then the least
+// recently used until there is room for one more.
+func (p *sessionPool) evictLocked(now time.Time) {
+	for key, e := range p.byConv {
+		if now.Sub(e.used) > pooledSessionIdle {
+			delete(p.byConv, key)
+			go closeSession(e.up)
+		}
+	}
+	for len(p.byConv) >= maxPooledSessions {
+		oldest := ""
+		for key, e := range p.byConv {
+			if oldest == "" || e.used.Before(p.byConv[oldest].used) {
+				oldest = key
+			}
+		}
+		e := p.byConv[oldest]
+		delete(p.byConv, oldest)
+		go closeSession(e.up)
+	}
+}
+
+// closeSession closes up, for use in a goroutine: a pooled session is closed
+// off the pool's lock, and a failure to close one the relay may already have
+// forgotten changes nothing.
+func closeSession(up *upstreamSession) { _ = up.Close() }
+
+// Close closes every pooled session and the shared one.
+func (p *sessionPool) Close() error {
+	p.mu.Lock()
+	pooled := p.byConv
+	p.byConv = nil
+	p.mu.Unlock()
+	for _, e := range pooled {
+		_ = e.up.Close()
+	}
+	return p.shared.Close()
+}
 
 // conversationID identifies the downstream conversation a tool call belongs
 // to: the gateway's own session ID when it issues them, otherwise the
