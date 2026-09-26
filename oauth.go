@@ -29,6 +29,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -114,6 +115,9 @@ func (o *oauthSettings) Verify(ctx context.Context, rawToken string) (string, er
 	if err := idt.Claims(&claims); err != nil {
 		return "", fmt.Errorf("parse token claims: %w", err)
 	}
+	if err := checkTokenType(rawToken, claims); err != nil {
+		return "", err
+	}
 	if o.requiredScope != "" && !claimHasScope(claims, o.requiredScope) {
 		return "", fmt.Errorf("token is missing the required scope %q", o.requiredScope)
 	}
@@ -127,6 +131,41 @@ func (o *oauthSettings) Verify(ctx context.Context, rawToken string) (string, er
 		return "", fmt.Errorf("token carries no %q claim to use as identity", o.identityClaim)
 	}
 	return id, nil
+}
+
+// checkTokenType refuses tokens that are signed by the issuer and name this
+// gateway as audience, yet are not access tokens. The one that matters is an
+// ID token: a client receives one at login and could replay it here, and the
+// verifier alone accepts it whenever the gateway's audience equals a client ID
+// — which is why MCP_OAUTH_AUDIENCE should be an identifier of its own.
+//
+// Two markers are checked, each only when present:
+//   - the JOSE header "typ": RFC 9068 access tokens say "at+jwt", most others
+//     say "JWT"; anything else ("id+jwt", "logout+jwt", ...) is refused;
+//   - Keycloak's "typ" claim, which says "Bearer" on access tokens and "ID",
+//     "Refresh" or "Logout" on the others.
+func checkTokenType(rawToken string, claims map[string]any) error {
+	if head, _, ok := strings.Cut(rawToken, "."); ok {
+		if raw, err := base64.RawURLEncoding.DecodeString(head); err == nil {
+			var h struct {
+				Typ string `json:"typ"`
+			}
+			if json.Unmarshal(raw, &h) == nil && h.Typ != "" {
+				switch strings.ToLower(h.Typ) {
+				case "jwt", "at+jwt", "application/at+jwt":
+				default:
+					return fmt.Errorf("token type %q is not an access token", h.Typ)
+				}
+			}
+		}
+	}
+	if t, ok := claims["typ"].(string); ok {
+		switch strings.ToLower(t) {
+		case "id", "refresh", "logout":
+			return fmt.Errorf("token type %q is not an access token", t)
+		}
+	}
+	return nil
 }
 
 // metadataDocument returns the RFC 9728 protected-resource metadata as a JSON

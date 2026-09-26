@@ -171,6 +171,13 @@ are on by default.
 
 Static tokens must be ≥32 characters (`openssl rand -hex 32`).
 
+`GET /health` answers `ok` without a credential, for liveness and readiness
+probes; it says nothing else. A client session left idle for an hour is closed.
+A client address with 30 failed logins in a minute is refused (429) until the
+minute is up — counted per `X-Forwarded-For` client with
+`MCP_TRUST_FORWARDED_HEADERS`, otherwise per connection address, so behind a
+proxy without that setting all clients share one budget.
+
 **OAuth 2.0 / OIDC** (optional, an alternative or addition to static tokens):
 the gateway acts as a Resource Server — it verifies a presented JWT's signature
 and claims, never issues tokens. Only asymmetric algorithms are accepted (the
@@ -181,7 +188,7 @@ discover the issuer.
 | Variable | Purpose |
 |---|---|
 | `MCP_OAUTH_ISSUER` | OIDC issuer URL. Its discovery document and JWKS are fetched at startup and rotated automatically. Setting this enables OAuth. |
-| `MCP_OAUTH_AUDIENCE` | The `aud` tokens must carry (this gateway's identifier). Required with an issuer. |
+| `MCP_OAUTH_AUDIENCE` | The `aud` tokens must carry (this gateway's identifier). Required with an issuer. Use an identifier of its own, not a client ID: ID tokens carry their client ID as `aud`. The gateway refuses tokens marked as ID, refresh or logout tokens, but not every provider marks them. |
 | `MCP_OAUTH_JWKS_FILE` | Use a static JWKS file (hot-reloaded on change) instead of issuer discovery — for air-gapped deployments. |
 | `MCP_OAUTH_IDENTITY_CLAIM` | Token claim to use as the audit identity (default `sub`). |
 | `MCP_OAUTH_REQUIRED_SCOPE` | Require this scope (`scope` string or `scp` array) in the token. |

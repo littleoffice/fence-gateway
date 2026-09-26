@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"sort"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -32,6 +34,11 @@ type gateway struct {
 	// pool, when set, gives each downstream conversation a relay session of
 	// its own; nil means every call uses up.
 	pool *sessionPool
+
+	// toolsMu guards tools: each relay tool's name and definition as last
+	// registered, so a resync changes only what changed.
+	toolsMu sync.Mutex
+	tools   map[string]string
 }
 
 // upstreamFor returns the relay session a call from this conversation uses.
@@ -54,72 +61,124 @@ func (g *gateway) registerTools(ctx context.Context, server *mcp.Server) error {
 	if err != nil {
 		return fmt.Errorf("connect upstream: %w", err)
 	}
-	n := 0
+	return g.syncTools(ctx, server, sess)
+}
+
+// syncTools makes the gateway's tools match the relay's: it adds the tools
+// sess lists that are new or changed, and removes the ones it no longer
+// lists. The SDK tells connected clients the list changed. It runs at startup
+// and again whenever the shared relay session is replaced, since a relay that
+// restarted may be a newer version: without it, a new tool stayed invisible
+// and a removed one failed on every call until the gateway restarted.
+func (g *gateway) syncTools(ctx context.Context, server *mcp.Server, sess *mcp.ClientSession) error {
+	seen := make(map[string]string)
+	var tools []*mcp.Tool
 	for tool, err := range sess.Tools(ctx, nil) {
 		if err != nil {
 			return fmt.Errorf("list upstream tools: %w", err)
 		}
-		name := tool.Name
-		server.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			// Who is calling. Extra is nil over stdio, where there is no HTTP
-			// request and the single local client needs no attribution.
-			var authz string
-			if req.Extra != nil {
-				authz = req.Extra.Header.Get("Authorization")
-			}
-			identity := g.hc.identityFor(ctx, authz)
-
-			switch {
-			case g.ua.passthrough():
-				if authz == "" {
-					// Fail closed. Falling back to the bootstrap credential
-					// here would put this call in the relay's bucket for
-					// every other caller — the collapse passthrough exists to
-					// prevent — and it would do so silently.
-					g.audit.Printf("upstream.credential.missing tool=%q", name)
-					return blocked("the call carried no credential to forward to the upstream relay, " +
-						"and the gateway does not substitute one"), nil
-				}
-				ctx = withUpstreamCredential(ctx, authz)
-			case g.exchanger != nil:
-				// Fail closed here too, for the same reason: a caller whose
-				// token cannot be exchanged is not sent under anyone else's.
-				tok, err := g.relayTokenFor(ctx, authz)
-				if err != nil {
-					g.audit.Printf("upstream.exchange.failed tool=%q identity=%q err=%q", name, identity, err)
-					return blocked("the gateway could not obtain a relay credential for this caller"), nil
-				}
-				ctx = withUpstreamCredential(ctx, "Bearer "+tok)
-			}
-
-			// Forward the raw arguments verbatim. CallToolParamsRaw.Arguments
-			// is json.RawMessage, which re-marshals to the exact bytes the
-			// client sent, so no argument is reinterpreted in transit.
-			// Each conversation reaches the relay as its own session, so the
-			// relay keeps its fetch history per conversation (upstream.go).
-			conv := conversationID(req)
-			ctx = withConversation(ctx, conv)
-			res, err := g.upstreamFor(identity, conv, req.Session).CallTool(ctx, &mcp.CallToolParams{
-				Name:      name,
-				Arguments: req.Params.Arguments,
-			})
-			if err != nil {
-				// A transport/protocol failure talking to the relay. Returned
-				// as a Go error, which the SDK surfaces as a protocol error to
-				// the client — the honest signal that the call did not reach a
-				// verified result.
-				// The SDK's error text names upstream session IDs, addresses
-				// and transport detail. That goes to the audit log; the client,
-				// and the model behind it, get a fixed message.
-				g.audit.Printf("upstream.error tool=%q identity=%q err=%q", name, identity, err)
-				return nil, errUpstreamCall
-			}
-			return g.verify(ctx, name, identity, res), nil
-		})
-		n++
+		def, err := json.Marshal(tool)
+		if err != nil {
+			return fmt.Errorf("encode upstream tool %q: %w", tool.Name, err)
+		}
+		seen[tool.Name] = string(def)
+		tools = append(tools, tool)
 	}
-	g.audit.Printf("proxy.tools.registered count=%d", n)
+
+	g.toolsMu.Lock()
+	defer g.toolsMu.Unlock()
+	added, removed := 0, 0
+	for _, tool := range tools {
+		if g.tools[tool.Name] == seen[tool.Name] {
+			continue
+		}
+		server.AddTool(tool, g.toolHandler(tool.Name))
+		added++
+	}
+	var gone []string
+	for name := range g.tools {
+		if _, ok := seen[name]; !ok {
+			gone = append(gone, name)
+		}
+	}
+	if len(gone) > 0 {
+		server.RemoveTools(gone...)
+		removed = len(gone)
+	}
+	g.tools = seen
+	g.audit.Printf("proxy.tools.synced count=%d added=%d removed=%d", len(seen), added, removed)
 	return nil
+}
+
+// resyncTools is the shared session's onReconnect.
+func (g *gateway) resyncTools(server *mcp.Server) func(*mcp.ClientSession) {
+	return func(sess *mcp.ClientSession) {
+		ctx, cancel := context.WithTimeout(context.Background(), upstreamConnectTimeout)
+		defer cancel()
+		if err := g.syncTools(ctx, server, sess); err != nil {
+			g.audit.Printf("proxy.tools.resync_failed err=%q", err)
+		}
+	}
+}
+
+// toolHandler is the verifying proxy handler for the relay tool name.
+func (g *gateway) toolHandler(name string) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Who is calling. Extra is nil over stdio, where there is no HTTP
+		// request and the single local client needs no attribution.
+		var authz string
+		if req.Extra != nil {
+			authz = req.Extra.Header.Get("Authorization")
+		}
+		identity := g.hc.identityFor(ctx, authz)
+
+		switch {
+		case g.ua.passthrough():
+			if authz == "" {
+				// Fail closed. Falling back to the bootstrap credential
+				// here would put this call in the relay's bucket for
+				// every other caller — the collapse passthrough exists to
+				// prevent — and it would do so silently.
+				g.audit.Printf("upstream.credential.missing tool=%q", name)
+				return blocked("the call carried no credential to forward to the upstream relay, " +
+					"and the gateway does not substitute one"), nil
+			}
+			ctx = withUpstreamCredential(ctx, authz)
+		case g.exchanger != nil:
+			// Fail closed here too, for the same reason: a caller whose
+			// token cannot be exchanged is not sent under anyone else's.
+			tok, err := g.relayTokenFor(ctx, authz)
+			if err != nil {
+				g.audit.Printf("upstream.exchange.failed tool=%q identity=%q err=%q", name, identity, err)
+				return blocked("the gateway could not obtain a relay credential for this caller"), nil
+			}
+			ctx = withUpstreamCredential(ctx, "Bearer "+tok)
+		}
+
+		// Forward the raw arguments verbatim. CallToolParamsRaw.Arguments
+		// is json.RawMessage, which re-marshals to the exact bytes the
+		// client sent, so no argument is reinterpreted in transit.
+		// Each conversation reaches the relay as its own session, so the
+		// relay keeps its fetch history per conversation (upstream.go).
+		conv := conversationID(req)
+		ctx = withConversation(ctx, conv)
+		res, err := g.upstreamFor(identity, conv, req.Session).CallTool(ctx, &mcp.CallToolParams{
+			Name:      name,
+			Arguments: req.Params.Arguments,
+		})
+		if err != nil {
+			// A transport/protocol failure talking to the relay. Returned
+			// as a Go error, which the SDK surfaces as a protocol error to
+			// the client — the honest signal that the call did not reach a
+			// verified result.
+			// The SDK's error text names upstream session IDs, addresses
+			// and transport detail. That goes to the audit log; the client,
+			// and the model behind it, get a fixed message.
+			g.audit.Printf("upstream.error tool=%q identity=%q err=%q", name, identity, err)
+			return nil, errUpstreamCall
+		}
+		return g.verify(ctx, name, identity, res), nil
+	}
 }
 
 // blocked is the result for a tool call the gateway refuses to forward. The
@@ -179,12 +238,38 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 	// Where each verified fence starts, per text block, for -strip-signature.
 	fenceStarts := make(map[*mcp.TextContent][]int)
 	verified, total, unfenced := 0, 0, 0
+
+	// What the relay can send is text, and images for searxng_read_url on an
+	// image. Anything else — an embedded resource, a resource link, audio,
+	// structured JSON beside the text — can carry words for the model that no
+	// fence covers, so it is a failure rather than something to pass along.
+	if res.StructuredContent != nil {
+		problems = append(problems, "tool result carries structured content, which cannot be fenced")
+	}
+	textBytes := 0
+	for _, c := range res.Content {
+		switch c := c.(type) {
+		case *mcp.TextContent:
+			textBytes += len(c.Text)
+		case *mcp.ImageContent:
+		default:
+			problems = append(problems, fmt.Sprintf("tool result carries %T, which cannot be fenced", c))
+		}
+	}
+	// Verifying costs time in proportion to the text, and more for text
+	// dense with fence-like tags. A result this large is not something the
+	// relay produces, so it is refused unread rather than worked through.
+	if textBytes > maxResultText {
+		g.audit.Printf("fence.too_large tool=%q identity=%q bytes=%d", tool, identity, textBytes)
+		return g.reject(identity, fmt.Sprintf("tool result of %d bytes exceeds the %d-byte verification limit",
+			textBytes, maxResultText))
+	}
+
 	for _, c := range res.Content {
 		tc, ok := c.(*mcp.TextContent)
 		if !ok {
-			// Non-text content (images, embedded resources) carries no fence
-			// and is not counted here. It is forwarded unverified, which is a
-			// wider gap than this function closes.
+			// Images carry no fence; anything else was counted as a problem
+			// above.
 			continue
 		}
 		if !strings.Contains(tc.Text, "<sec:fence") {
@@ -388,6 +473,10 @@ func (g *gateway) checkFormatDowngrade(ctx context.Context, r *fv.Result) []stri
 // errUpstreamCall is what a client sees when the call to the relay itself
 // failed.
 var errUpstreamCall = errors.New("the fence gateway could not complete the call to the upstream relay; see the gateway audit log")
+
+// maxResultText bounds the text of one tool result the gateway will verify.
+// The relay's largest replies (a full page read) are a few MiB.
+const maxResultText = 16 << 20
 
 // relayNoResults is the relay's reply to a search with no hits: the one
 // successful result it sends without a fence.

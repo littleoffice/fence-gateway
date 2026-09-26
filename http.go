@@ -9,6 +9,9 @@ import (
 	"net"
 	"net/http"
 	"os/signal"
+	"strconv"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -33,7 +36,13 @@ func newHTTPHandler(server *mcp.Server, hc httpConfig, audit *log.Logger) http.H
 	// It has to match the relay's setting — see httpConfig.stateless.
 	mcpHandler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server { return server },
-		&mcp.StreamableHTTPOptions{Stateless: hc.stateless},
+		&mcp.StreamableHTTPOptions{
+			Stateless: hc.stateless,
+			// A client that goes away without ending its session would
+			// otherwise leave it, and the relay session held for it, open
+			// for as long as the gateway runs.
+			SessionTimeout: downstreamSessionIdle,
+		},
 	)
 	// CrossOriginProtection rejects non-safe cross-origin browser requests
 	// (checked via Sec-Fetch-Site, or Origin vs Host). Non-browser clients —
@@ -43,6 +52,13 @@ func newHTTPHandler(server *mcp.Server, hc httpConfig, audit *log.Logger) http.H
 
 	mux := http.NewServeMux()
 	mux.Handle("/", requireAuth(hc, audit, protected))
+	// Liveness for orchestrators: unauthenticated, and saying nothing but
+	// that the process is serving. The image has no shell or HTTP client for
+	// a container HEALTHCHECK, so the probe comes from outside.
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("ok\n"))
+	})
 	// RFC 9728 protected-resource metadata — unauthenticated by design (a client
 	// needs it *before* it can obtain a token), registered only when OAuth is on.
 	// Its specific path takes routing precedence over the "/" MCP handler.
@@ -60,6 +76,7 @@ func newHTTPHandler(server *mcp.Server, hc httpConfig, audit *log.Logger) http.H
 // protected-resource metadata so a spec-compliant client can discover the
 // issuer.
 func requireAuth(hc httpConfig, audit *log.Logger, next http.Handler) http.Handler {
+	failures := newAuthFailures(maxAuthFailures, authFailureWindow)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authz := r.Header.Get("Authorization")
 		staticOn := len(hc.authTokens) > 0
@@ -81,6 +98,22 @@ func requireAuth(hc httpConfig, audit *log.Logger, next http.Handler) http.Handl
 			}
 		}
 
+		// A client over its budget of failed attempts is refused before any
+		// further verification. That matters most for OAuth: a token naming
+		// an unknown key makes the verifier fetch the issuer's key set again,
+		// so without a limit anyone could make the gateway hammer the
+		// identity provider, one fetch per request. A valid static token has
+		// already passed above, so it is never held up by this.
+		client := clientAddr(r, hc.trustForwarded)
+		if failures.exceeded(client) {
+			if audit != nil {
+				audit.Printf("auth.throttled method=%s path=%q remote=%s", r.Method, r.URL.Path, client)
+			}
+			w.Header().Set("Retry-After", strconv.Itoa(int(authFailureWindow.Seconds())))
+			http.Error(w, "too many failed authentication attempts", http.StatusTooManyRequests)
+			return
+		}
+
 		// Then OAuth: verify a presented Bearer JWT against the configured issuer.
 		if oauthOn {
 			if tok := bearerToken(authz); tok != "" {
@@ -91,6 +124,7 @@ func requireAuth(hc httpConfig, audit *log.Logger, next http.Handler) http.Handl
 			}
 		}
 
+		failures.record(client)
 		if oauthOn {
 			w.Header().Set("WWW-Authenticate",
 				`Bearer realm="mcp", resource_metadata="`+resourceMetadataURL(r, hc.trustForwarded)+`"`)
@@ -129,10 +163,13 @@ func (g *gateway) runHTTP(ctx context.Context, server *mcp.Server, hc httpConfig
 	srv := &http.Server{
 		Addr:    ":" + hc.port,
 		Handler: g.logRequests(newHTTPHandler(server, hc, g.audit)),
-		// ReadHeaderTimeout guards against slow-header (Slowloris) clients.
+		// ReadHeaderTimeout guards against slow-header (Slowloris) clients,
+		// ReadTimeout against slow bodies: a JSON-RPC request is small, and
+		// one trickled in a byte at a time held a connection indefinitely.
 		// WriteTimeout is 0: the SDK manages SSE streams with their own
 		// deadlines, and a server-level write deadline would truncate them.
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 
@@ -191,6 +228,78 @@ func (g *gateway) logRequests(next http.Handler) http.Handler {
 		g.audit.Printf("http.request method=%s path=%q remote=%s elapsed_ms=%d",
 			r.Method, r.URL.Path, remoteHost(r), time.Since(start).Milliseconds())
 	})
+}
+
+const (
+	// downstreamSessionIdle closes a client session left idle this long.
+	downstreamSessionIdle = time.Hour
+	// maxAuthFailures failed attempts per client within authFailureWindow
+	// are allowed; past that, attempts are refused until the window ends.
+	maxAuthFailures   = 30
+	authFailureWindow = time.Minute
+	// maxTrackedClients bounds the failure table; past it the table starts
+	// over rather than growing without limit.
+	maxTrackedClients = 10000
+)
+
+// authFailures counts failed authentication attempts per client address in a
+// fixed window.
+type authFailures struct {
+	limit  int
+	window time.Duration
+
+	mu     sync.Mutex
+	counts map[string]*failureWindow
+}
+
+type failureWindow struct {
+	start time.Time
+	n     int
+}
+
+func newAuthFailures(limit int, window time.Duration) *authFailures {
+	return &authFailures{limit: limit, window: window, counts: make(map[string]*failureWindow)}
+}
+
+func (a *authFailures) exceeded(client string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	w, ok := a.counts[client]
+	if !ok || time.Since(w.start) > a.window {
+		return false
+	}
+	return w.n >= a.limit
+}
+
+func (a *authFailures) record(client string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := time.Now()
+	w, ok := a.counts[client]
+	if !ok || now.Sub(w.start) > a.window {
+		if len(a.counts) >= maxTrackedClients {
+			a.counts = make(map[string]*failureWindow)
+		}
+		a.counts[client] = &failureWindow{start: now, n: 1}
+		return
+	}
+	w.n++
+}
+
+// clientAddr is the address failed attempts are counted against: the
+// connection's, or, when forwarded headers are trusted (the gateway sits
+// behind a reverse proxy that sets them), the first X-Forwarded-For entry.
+// Behind a proxy without that setting every client shares the proxy's
+// address, so one client's failures can hold up another's OAuth logins.
+func clientAddr(r *http.Request, trustForwarded bool) string {
+	if trustForwarded {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
+				return first
+			}
+		}
+	}
+	return remoteHost(r)
 }
 
 // remoteHost returns the request's remote address without any port, and never

@@ -287,6 +287,7 @@ func main() {
 	if err := g.registerTools(ctx, server); err != nil {
 		fatal("register tools: %v", err)
 	}
+	g.up.onReconnect = g.resyncTools(server)
 
 	// Serve. MCP_PORT selects the Streamable HTTP transport (remote); otherwise
 	// stdio (local subprocess). Both reuse the same verifying proxy server.
