@@ -158,6 +158,13 @@ func main() {
 		PinnedFingerprint: cfg.pin,
 		TOFU:              cfg.tofu,
 		RetainPrevious:    true,
+		// Keys a relay replica stops using drop out after a day; one in use
+		// is kept alive by every fence it verifies.
+		KeyTTL: 24 * time.Hour,
+		// Fences naming a key the endpoint does not serve (a pin mismatch,
+		// a misconfigured replica) cost one round of fetches per interval,
+		// not one per call.
+		MinRefreshInterval: 2 * time.Second,
 		OnKeyChange: func(old, nw string) {
 			audit.Printf("fence.key.rotated old=%s new=%s", old, nw)
 		},
