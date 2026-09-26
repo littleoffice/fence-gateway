@@ -74,6 +74,14 @@ const (
 	// limits. Forwarding the caller's own credential keeps the relay's
 	// separation intact without the relay changing at all.
 	upstreamAuthPassthrough upstreamAuthMode = "passthrough"
+
+	// upstreamAuthExchange trades each caller's OAuth token at the identity
+	// provider for a token issued to the relay for the same user (RFC 8693),
+	// and presents that. Callers keep their own identity at the relay, as in
+	// passthrough, but a caller's token is never accepted there: the side
+	// door passthrough leaves open is closed by the tokens themselves. See
+	// exchange.go.
+	upstreamAuthExchange upstreamAuthMode = "exchange"
 )
 
 // upstreamAuth is how the gateway authenticates to the relay. It is deployment
@@ -94,6 +102,13 @@ type upstreamAuth struct {
 
 func (u upstreamAuth) passthrough() bool { return u.mode == upstreamAuthPassthrough }
 
+// perCaller reports whether each caller reaches the relay as themselves:
+// passthrough (their own token) or exchange (a token issued to the relay for
+// them). The alternative is static: every caller as the gateway.
+func (u upstreamAuth) perCaller() bool {
+	return u.mode == upstreamAuthPassthrough || u.mode == upstreamAuthExchange
+}
+
 // upstreamAuthFromEnv reads UPSTREAM_MCP_AUTH_MODE and resolves the bootstrap
 // credential. flagToken is the -token flag, whose own default is
 // UPSTREAM_MCP_TOKEN; UPSTREAM_MCP_TOKEN_FILE is the file form, for
@@ -104,12 +119,12 @@ func upstreamAuthFromEnv(flagToken string) (upstreamAuth, error) {
 
 	switch m := upstreamAuthMode(strings.ToLower(strings.TrimSpace(os.Getenv("UPSTREAM_MCP_AUTH_MODE")))); m {
 	case "":
-	case upstreamAuthStatic, upstreamAuthPassthrough:
+	case upstreamAuthStatic, upstreamAuthPassthrough, upstreamAuthExchange:
 		u.mode = m
 		u.explicit = true
 	default:
-		return u, fmt.Errorf("unknown UPSTREAM_MCP_AUTH_MODE %q: want %q or %q",
-			m, upstreamAuthStatic, upstreamAuthPassthrough)
+		return u, fmt.Errorf("unknown UPSTREAM_MCP_AUTH_MODE %q: want %q, %q or %q",
+			m, upstreamAuthStatic, upstreamAuthPassthrough, upstreamAuthExchange)
 	}
 
 	f := strings.TrimSpace(os.Getenv("UPSTREAM_MCP_TOKEN_FILE"))
@@ -153,7 +168,7 @@ func (c httpConfig) multiCaller() bool {
 // it on unasked would break every deployment whose relay knows only the
 // gateway's.
 func checkSharedRelayIdentity(ua upstreamAuth, hc httpConfig) error {
-	if ua.passthrough() || ua.explicit || !hc.multiCaller() {
+	if ua.perCaller() || ua.explicit || !hc.multiCaller() {
 		return nil
 	}
 	return fmt.Errorf("%s would reach the relay as one caller: it keys its fetch history "+

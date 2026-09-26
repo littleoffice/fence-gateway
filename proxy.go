@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -22,7 +24,10 @@ type gateway struct {
 	ua    upstreamAuth
 	keys  fv.KeySource
 	audit *log.Logger
-	up    *upstreamSession
+	// exchanger trades callers' tokens for relay tokens (exchange mode);
+	// nil otherwise.
+	exchanger *tokenExchanger
+	up        *upstreamSession
 	// pool, when set, gives each downstream conversation a relay session of
 	// its own; nil means every call uses up.
 	pool *sessionPool
@@ -63,23 +68,27 @@ func (g *gateway) registerTools(ctx context.Context, server *mcp.Server) error {
 			}
 			identity := g.hc.identityFor(ctx, authz)
 
-			if g.ua.passthrough() {
+			switch {
+			case g.ua.passthrough():
 				if authz == "" {
 					// Fail closed. Falling back to the bootstrap credential
 					// here would put this call in the relay's bucket for
 					// every other caller — the collapse passthrough exists to
 					// prevent — and it would do so silently.
 					g.audit.Printf("upstream.credential.missing tool=%q", name)
-					return &mcp.CallToolResult{
-						IsError: true,
-						Content: []mcp.Content{&mcp.TextContent{
-							Text: "Tool call blocked by the fence gateway: the call carried no " +
-								"credential to forward to the upstream relay, and the gateway does " +
-								"not substitute one. See the gateway audit log for detail.",
-						}},
-					}, nil
+					return blocked("the call carried no credential to forward to the upstream relay, " +
+						"and the gateway does not substitute one"), nil
 				}
 				ctx = withUpstreamCredential(ctx, authz)
+			case g.exchanger != nil:
+				// Fail closed here too, for the same reason: a caller whose
+				// token cannot be exchanged is not sent under anyone else's.
+				tok, err := g.relayTokenFor(ctx, authz)
+				if err != nil {
+					g.audit.Printf("upstream.exchange.failed tool=%q identity=%q err=%q", name, identity, err)
+					return blocked("the gateway could not obtain a relay credential for this caller"), nil
+				}
+				ctx = withUpstreamCredential(ctx, "Bearer "+tok)
 			}
 
 			// Forward the raw arguments verbatim. CallToolParamsRaw.Arguments
@@ -107,6 +116,43 @@ func (g *gateway) registerTools(ctx context.Context, server *mcp.Server) error {
 	}
 	g.audit.Printf("proxy.tools.registered count=%d", n)
 	return nil
+}
+
+// blocked is the result for a tool call the gateway refuses to forward. The
+// reason is fixed text; the detail goes to the audit log.
+func blocked(reason string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		IsError: true,
+		Content: []mcp.Content{&mcp.TextContent{
+			Text: "Tool call blocked by the fence gateway: " + reason + ". See the gateway audit log for detail.",
+		}},
+	}
+}
+
+// relayTokenFor exchanges a caller's OAuth token for a relay token. A caller
+// holding a static gateway token has nothing the identity provider can
+// exchange, so is refused rather than sent as someone else.
+func (g *gateway) relayTokenFor(ctx context.Context, authz string) (string, error) {
+	if authz == "" {
+		return "", errors.New("the call carried no credential")
+	}
+	if _, static := g.hc.authTokens[sha256.Sum256([]byte(authz))]; static {
+		return "", errors.New("a static gateway token cannot be exchanged; log in with OAuth instead")
+	}
+	subject := bearerToken(authz)
+	if subject == "" {
+		return "", errors.New("the credential is not a bearer token")
+	}
+	return g.exchanger.Exchange(ctx, subject)
+}
+
+// ownToken returns the gateway's own-token fetcher for authTransport in
+// exchange mode, or nil.
+func (g *gateway) ownToken() func(context.Context) (string, error) {
+	if g.exchanger == nil {
+		return nil
+	}
+	return g.exchanger.Own
 }
 
 // verify inspects the text content of a tool result, verifies any fences it
