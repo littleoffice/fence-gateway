@@ -135,9 +135,13 @@ func main() {
 	if err != nil {
 		fatal("%v", err)
 	}
-	if ua.passthrough() && !hc.httpMode() {
-		fatal("UPSTREAM_MCP_AUTH_MODE=passthrough requires HTTP mode: set MCP_PORT, "+
-			"or leave the mode at %q (stdio carries no downstream credential to forward)", upstreamAuthStatic)
+	if ua.perCaller() && !hc.httpMode() {
+		fatal("UPSTREAM_MCP_AUTH_MODE=%s requires HTTP mode: set MCP_PORT, "+
+			"or leave the mode at %q (stdio carries no caller credential)", ua.mode, upstreamAuthStatic)
+	}
+	xcfg, err := exchangeConfigFromEnv(ua.mode)
+	if err != nil {
+		fatal("%v", err)
 	}
 
 	ku := *keyURL
@@ -182,6 +186,22 @@ func main() {
 		fatal("%v", err)
 	}
 	hc.oauth = oauth
+	var exchanger *tokenExchanger
+	if xcfg != nil {
+		// Only an OAuth token can be exchanged: a static token is a shared
+		// secret the identity provider has never seen.
+		if !oauth.enabled() {
+			fatal("UPSTREAM_MCP_AUTH_MODE=exchange needs callers to log in with OAuth: set MCP_OAUTH_ISSUER " +
+				"(and MCP_OAUTH_AUDIENCE) to the provider whose tokens the gateway exchanges")
+		}
+		idp := &http.Client{Timeout: 30 * time.Second}
+		if roots := strings.TrimSpace(os.Getenv("MCP_OAUTH_CA_ROOTS")); roots != "" {
+			if idp, err = oauthHTTPClientWithRoots(roots); err != nil {
+				fatal("MCP_OAUTH_CA_ROOTS %q: %v", roots, err)
+			}
+		}
+		exchanger = newTokenExchanger(*xcfg, idp)
+	}
 	if err := checkSharedRelayIdentity(ua, hc); err != nil {
 		fatal("%v", err)
 	}
@@ -204,7 +224,7 @@ func main() {
 		}
 	}
 
-	g := &gateway{cfg: cfg, hc: hc, ua: ua, keys: keys, audit: audit}
+	g := &gateway{cfg: cfg, hc: hc, ua: ua, keys: keys, audit: audit, exchanger: exchanger}
 
 	// Say, once, how callers reach the relay — and warn when several of them
 	// reach it as one. In static mode every downstream identity arrives at the
@@ -216,7 +236,7 @@ func main() {
 		ua.mode, ua.token != "", len(hc.authTokens), hc.stateless)
 	// Reached only when static was chosen on purpose: checkSharedRelayIdentity
 	// refuses the unchosen case before this point.
-	if !ua.passthrough() && hc.multiCaller() {
+	if !ua.perCaller() && hc.multiCaller() {
 		audit.Printf("upstream.auth.collapse callers=%q hint=%q", describeCallers(hc),
 			"all downstream callers reach the relay as one: its per-caller fetch history "+
 				"(searxng_session_sources) and rate limits are shared between them. "+
@@ -318,6 +338,7 @@ func (g *gateway) upstreamTransport() *mcp.StreamableClientTransport {
 		HTTPClient: &http.Client{
 			Transport: &authTransport{
 				token: g.ua.token,
+				own:   g.ownToken(),
 				host:  upstreamHost(g.cfg.upstream),
 				base:  http.DefaultTransport,
 			},
@@ -349,8 +370,11 @@ func upstreamCredential(ctx context.Context) string {
 // relay that requires no credential and fails loudly against one that does.
 type authTransport struct {
 	token string // bootstrap credential, presented when the context carries none
-	host  string // upstream authority; no credential is attached to any other
-	base  http.RoundTripper
+	// own, when set and token is empty, fetches the gateway's own OAuth
+	// token (exchange mode, client_credentials) as the bootstrap credential.
+	own  func(context.Context) (string, error)
+	host string // upstream authority; no credential is attached to any other
+	base http.RoundTripper
 }
 
 func (a *authTransport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -364,6 +388,13 @@ func (a *authTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	authz := upstreamCredential(r.Context())
 	if authz == "" && a.token != "" {
 		authz = "Bearer " + a.token
+	}
+	if authz == "" && a.own != nil {
+		tok, err := a.own(r.Context())
+		if err != nil {
+			return nil, fmt.Errorf("gateway's own token for the relay: %w", err)
+		}
+		authz = "Bearer " + tok
 	}
 	// A stateless relay issues no session, so the SDK sends no
 	// Mcp-Session-Id, and the relay reads the header as the client's

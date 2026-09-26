@@ -161,9 +161,13 @@ are on by default.
 | `MCP_AUTH_TOKEN_FILE` | File of tokens, one `identity:token` per line (`#` comments allowed). |
 | `MCP_TLS_CERT` / `MCP_TLS_KEY` | Serve HTTPS directly (both or neither). Omit to terminate TLS at a reverse proxy. |
 | `MCP_STATELESS` | No session-ID issuance, so replicas need no sticky routing. Must match the relay's setting — see below. |
-| `UPSTREAM_MCP_AUTH_MODE` | `static` (default) or `passthrough` — which credential tool calls carry upstream. Required when more than one caller can reach the gateway. See below. |
+| `UPSTREAM_MCP_AUTH_MODE` | `static` (default), `passthrough` or `exchange` — which credential tool calls carry upstream. Required when more than one caller can reach the gateway. See below. |
 | `UPSTREAM_MCP_TOKEN` | The gateway's own bootstrap credential for the relay. One per gateway, not one per caller. |
 | `UPSTREAM_MCP_TOKEN_FILE` | The same credential read from a mounted file. Set one of the two, not both. |
+| `UPSTREAM_OAUTH_TOKEN_URL` | `exchange` only: the identity provider's token endpoint (https). |
+| `UPSTREAM_OAUTH_CLIENT_ID` / `UPSTREAM_OAUTH_CLIENT_SECRET` (or `_FILE`) | `exchange` only: the gateway's client at the provider, allowed to exchange tokens. |
+| `UPSTREAM_OAUTH_AUDIENCE` | `exchange` only, optional: the relay's client ID, sent as `audience`. Keycloak needs it. |
+| `UPSTREAM_OAUTH_DELEGATION` | `exchange` only, optional: also send the gateway's own token as `actor_token`, so the relay's token records the gateway acting for the user (`act`). Off by default. |
 
 Static tokens must be ≥32 characters (`openssl rand -hex 32`).
 
@@ -205,7 +209,26 @@ decides which of those two things happens.
 | Value | Tool calls carry | Use when |
 |---|---|---|
 | `static` (default) | the gateway's own credential | one caller, or callers you are content to treat as one |
-| `passthrough` | the calling client's own `Authorization`, forwarded verbatim | more than one caller shares the gateway |
+| `passthrough` | the calling client's own `Authorization`, forwarded verbatim | more than one caller shares the gateway, and the relay is reachable only from it |
+| `exchange` | a token the identity provider issued to the relay for that caller (RFC 8693) | more than one caller, logging in with OAuth: the clean end state |
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/relay-credential-modes-dark.svg">
+  <img alt="Three modes. static: the relay sees only the gateway; callers' tokens do not work at the relay. passthrough: the relay sees each caller, but their tokens also work at the relay directly. exchange: the gateway swaps each caller's token for a relay token, so the relay sees each caller and their own tokens do not work there." src="docs/diagrams/relay-credential-modes-light.svg">
+</picture>
+
+The dashed line is a caller trying to reach the relay directly with their own token.
+
+**`exchange`** closes the gap `passthrough` leaves. In `passthrough` the token a caller
+holds for the gateway also works at the relay, so a caller who can reach the relay can skip
+the gateway and its checks. In `exchange` the gateway trades each caller's OAuth token at the
+identity provider for a token issued to the relay for the same user, and presents that. The
+caller's own token is only good at the gateway. The relay needs no change: point its
+`MCP_OAUTH_ISSUER` and `MCP_OAUTH_AUDIENCE` at the provider and client that issue the
+exchanged tokens. Callers must log in with OAuth; a static-token caller is refused. The gateway
+authenticates its own housekeeping with a client-credentials token from the same client, or
+with `UPSTREAM_MCP_TOKEN` when that is set. Setup for authentik and Keycloak is in
+[docs/token-exchange.md](docs/token-exchange.md).
 
 With more than one caller (several static tokens, or OAuth, where every subject is a
 caller), the gateway refuses to start until `UPSTREAM_MCP_AUTH_MODE` is set. Sharing one
