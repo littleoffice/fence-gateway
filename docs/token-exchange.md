@@ -6,12 +6,25 @@ same user ([RFC 8693](https://www.rfc-editor.org/rfc/rfc8693)), and presents
 that. The caller's own token only works at the gateway, so reaching the relay
 directly gets a caller nowhere.
 
-```
-MCP client ── user token (aud: gateway) ──▶ fence-gateway ── relay token (aud: relay, sub: user) ──▶ relay
-                                                  │  ▲
-                              token exchange ─────┘  └──── relay token
-                                          identity provider
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="diagrams/token-exchange-flow-dark.svg">
+  <img alt="One tool call in exchange mode: the client logs in at the identity provider, calls the gateway with its user token, the gateway swaps it for a relay token and calls the relay, which is reachable only from the gateway; the relay answers with signed fences, which the gateway verifies before answering. A direct call to the relay is stopped by the network and refused for its audience." src="diagrams/token-exchange-flow-light.svg">
+</picture>
+
+1. The MCP client logs in at the identity provider and gets a user token made for the gateway (client G).
+2. It calls the gateway with that token, which the gateway checks.
+3. The gateway sends the user token to the provider's token endpoint as a token exchange, signing in as client R.
+4. The provider returns a relay token for the same user. The gateway caches it until shortly before it expires.
+5. The gateway calls the relay with the relay token; the relay files history and limits under that user.
+6. The relay answers with signed fences.
+7. The gateway verifies every fence, then answers the client.
+
+How this compares with the other two modes:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="diagrams/relay-credential-modes-dark.svg">
+  <img alt="Three modes. static: the relay sees only the gateway; callers' tokens do not work at the relay. passthrough: the relay sees each caller, but their tokens also work at the relay directly. exchange: the gateway swaps each caller's token for a relay token, so the relay sees each caller and their own tokens do not work there." src="diagrams/relay-credential-modes-light.svg">
+</picture>
 
 Any provider that implements RFC 8693 works. This page covers authentik and
 Keycloak.

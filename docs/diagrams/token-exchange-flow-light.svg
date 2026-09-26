@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 470" role="img" aria-label="Full exchange setup. The MCP client logs in at the identity provider and calls the gateway with its user token. The gateway checks it, swaps it at the identity provider for a relay token, and calls the relay with that. The relay, reachable only from the gateway, searches through SearXNG and returns signed fences, which the gateway verifies before answering the client. A direct call from the client to the relay is blocked by the network and by the token audience."><style>
+.bg{fill:#ffffff}
+.box{fill:#ffffff;stroke:#c3ccd5;stroke-width:1.5}
+.box.gw{stroke:#0b6b78;stroke-width:2;fill:#e2f1f3}
+.box.idp{stroke:#9a5b07;fill:#fbf0df}
+.pill{fill:#ffffff;stroke:#9a5b07;stroke-width:1.2}
+.zone{fill:#eef2f5;stroke:#5b6875;stroke-width:1.2;stroke-dasharray:6 5}
+.t{fill:#17212b;font-family:'IBM Plex Sans','Segoe UI',system-ui,-apple-system,Helvetica,Arial,sans-serif}
+.lbl{font-size:14px;font-weight:600}
+.m{font-family:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.sub,.tok,.zone-t{fill:#5b6875;font-size:11px}
+.pill-t{fill:#17212b;font-size:11px;font-weight:500}
+.pill-s{fill:#5b6875;font-size:10px}
+.head{fill:#17212b;font-family:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:16px;font-weight:600}
+.head-s{fill:#5b6875;font-family:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px}
+.head-s.rec{fill:#0b6b78}
+.ln{stroke:#17212b;stroke-width:1.5;fill:none}
+.ln.acc{stroke:#0b6b78;stroke-width:2}
+.idpln{stroke:#9a5b07}
+.mk-ink{fill:#17212b}.mk-idp{fill:#9a5b07}.mk-acc{fill:#0b6b78}.mk-warn{fill:#b42318}
+.door{fill:none;stroke-width:1.6;stroke-dasharray:5 4}
+.door.open{stroke:#b42318}.door.shut{stroke:#2e7a4c}
+.stop{fill:#ffffff;stroke:#2e7a4c;stroke-width:2}
+.stop-x{stroke:#2e7a4c;stroke-width:2}
+.door-t{font-size:11px}.open-t{fill:#b42318}.shut-t{fill:#2e7a4c}
+.num{fill:#0b6b78}
+.num-t{fill:#ffffff;font-family:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;font-weight:600}
+</style><rect width="960" height="470" class="bg"/>
+<defs><marker id="fa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="mk-ink"/></marker><marker id="fi" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="mk-idp"/></marker><marker id="fg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="mk-acc"/></marker></defs>
+<!-- identity provider -->
+<rect x="300" y="24" width="250" height="120" rx="8" class="box idp"/>
+<text x="425" y="50" class="t lbl" text-anchor="middle">Identity provider</text>
+<text x="425" y="68" class="m sub" text-anchor="middle">authentik · Keycloak</text>
+<rect x="316" y="86" width="104" height="38" rx="6" class="pill"/>
+<text x="368" y="104" class="m pill-t" text-anchor="middle">client G</text>
+<text x="368" y="118" class="m pill-s" text-anchor="middle">user tokens</text>
+<rect x="430" y="86" width="104" height="38" rx="6" class="pill"/>
+<text x="482" y="104" class="m pill-t" text-anchor="middle">client R</text>
+<text x="482" y="118" class="m pill-s" text-anchor="middle">relay tokens</text>
+<!-- client -->
+<rect x="20" y="250" width="160" height="64" rx="8" class="box"/>
+<text x="100" y="278" class="t lbl" text-anchor="middle">MCP client</text>
+<text x="100" y="297" class="m sub" text-anchor="middle">Claude · Cursor</text>
+<!-- gateway -->
+<rect x="310" y="250" width="190" height="64" rx="8" class="box gw"/>
+<text x="405" y="278" class="t lbl" text-anchor="middle">fence-gateway</text>
+<text x="405" y="297" class="m sub" text-anchor="middle">AUTH_MODE=exchange</text>
+<!-- boundary -->
+<rect x="600" y="200" width="344" height="164" rx="10" class="zone"/>
+<text x="614" y="222" class="m zone-t">relay network · only the gateway may enter</text>
+<rect x="616" y="250" width="150" height="64" rx="8" class="box"/>
+<text x="691" y="278" class="t lbl" text-anchor="middle">relay</text>
+<text x="691" y="297" class="m sub" text-anchor="middle">signs fences</text>
+<rect x="800" y="250" width="128" height="64" rx="8" class="box"/>
+<text x="864" y="286" class="t lbl" text-anchor="middle">SearXNG</text>
+<!-- web -->
+<rect x="800" y="404" width="128" height="44" rx="8" class="box"/>
+<text x="864" y="431" class="t lbl" text-anchor="middle">the web</text>
+<line x1="864" y1="314" x2="864" y2="400" class="ln" marker-end="url(#fa)"/>
+<text x="856" y="382" class="m tok" text-anchor="end">search · fetch</text>
+<line x1="766" y1="282" x2="796" y2="282" class="ln" marker-end="url(#fa)"/>
+
+<!-- 1 login -->
+<path d="M100,250 V105 H312" class="ln idpln" marker-end="url(#fi)"/>
+<text x="112" y="96" class="m tok">user token · aud G</text>
+<!-- 2 call gateway -->
+<line x1="180" y1="272" x2="306" y2="272" class="ln" marker-end="url(#fa)"/>
+<text x="248" y="264" class="m tok" text-anchor="middle">user token</text>
+<!-- 3/4 exchange -->
+<line x1="390" y1="250" x2="390" y2="148" class="ln idpln" marker-end="url(#fi)"/>
+<line x1="450" y1="148" x2="450" y2="246" class="ln idpln" marker-end="url(#fi)"/>
+<text x="380" y="200" class="m tok" text-anchor="end">user token</text>
+<text x="460" y="200" class="m tok">relay token</text>
+<text x="460" y="214" class="m tok">sub alice · aud R</text>
+<!-- 5 call relay -->
+<line x1="500" y1="272" x2="612" y2="272" class="ln acc" marker-end="url(#fg)"/>
+<text x="561" y="264" class="m tok" text-anchor="middle">relay token</text>
+<!-- 6 back -->
+<line x1="616" y1="300" x2="504" y2="300" class="ln" marker-end="url(#fa)"/>
+<text x="550" y="324" class="m tok" text-anchor="middle">signed fences</text>
+<!-- 7 answer -->
+<line x1="310" y1="300" x2="184" y2="300" class="ln acc" marker-end="url(#fg)"/>
+<text x="240" y="324" class="m tok" text-anchor="middle">verified result</text>
+<!-- side door -->
+<path d="M100,314 V420 H660 V384" class="door shut"/>
+<circle cx="660" cy="374" r="10" class="stop"/>
+<path d="M654.5,368.5 L665.5,379.5 M665.5,368.5 L654.5,379.5" class="stop-x"/>
+<text x="112" y="440" class="m door-t shut-t">direct call with the user token: stopped by the network, and refused by the relay (wrong audience)</text>
+
+<!-- step numbers -->
+<circle cx="100" cy="180" r="11" class="num"/><text x="100" y="184" class="num-t" text-anchor="middle">1</text>
+<circle cx="200" cy="272" r="11" class="num"/><text x="200" y="276" class="num-t" text-anchor="middle">2</text>
+<circle cx="390" cy="226" r="11" class="num"/><text x="390" y="230" class="num-t" text-anchor="middle">3</text>
+<circle cx="450" cy="170" r="11" class="num"/><text x="450" y="174" class="num-t" text-anchor="middle">4</text>
+<circle cx="512" cy="272" r="11" class="num"/><text x="512" y="276" class="num-t" text-anchor="middle">5</text>
+<circle cx="600" cy="300" r="11" class="num"/><text x="600" y="304" class="num-t" text-anchor="middle">6</text>
+<circle cx="292" cy="300" r="11" class="num"/><text x="292" y="304" class="num-t" text-anchor="middle">7</text>
+</svg>

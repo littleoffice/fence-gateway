@@ -212,6 +212,13 @@ decides which of those two things happens.
 | `passthrough` | the calling client's own `Authorization`, forwarded verbatim | more than one caller shares the gateway, and the relay is reachable only from it |
 | `exchange` | a token the identity provider issued to the relay for that caller (RFC 8693) | more than one caller, logging in with OAuth: the clean end state |
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/diagrams/relay-credential-modes-dark.svg">
+  <img alt="Three modes. static: the relay sees only the gateway; callers' tokens do not work at the relay. passthrough: the relay sees each caller, but their tokens also work at the relay directly. exchange: the gateway swaps each caller's token for a relay token, so the relay sees each caller and their own tokens do not work there." src="docs/diagrams/relay-credential-modes-light.svg">
+</picture>
+
+The dashed line is a caller trying to reach the relay directly with their own token.
+
 **`exchange`** closes the gap `passthrough` leaves. In `passthrough` the token a caller
 holds for the gateway also works at the relay, so a caller who can reach the relay can skip
 the gateway and its checks. In `exchange` the gateway trades each caller's OAuth token at the
