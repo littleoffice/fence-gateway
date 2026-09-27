@@ -167,6 +167,11 @@ type Rejection struct {
 	Snippet string
 }
 
+// DefaultMaxCandidates is the Verifier.MaxCandidates used when it is zero.
+// A relay response holds two fences; real content that merely quotes the tag
+// adds a few more.
+const DefaultMaxCandidates = 1000
+
 // Verifier holds verification configuration.
 type Verifier struct {
 	// Keys is the set of acceptable public keys. Multiple keys are
@@ -193,6 +198,12 @@ type Verifier struct {
 	// awareness preamble able to name an authoritative boundary.
 	RequireNonce bool
 
+	// MaxCandidates bounds how many "<sec:fence" openings one input may
+	// contain. Each one is parsed on its own, so text packed with openings
+	// makes Verify do work far out of proportion to its length. Zero means
+	// DefaultMaxCandidates; negative means no limit.
+	MaxCandidates int
+
 	// Now is injectable for testing. Nil means time.Now.
 	Now func() time.Time
 }
@@ -214,10 +225,19 @@ func (v *Verifier) Verify(s string) (*Result, error) {
 		return nil, errors.New("verifier has no public keys configured")
 	}
 
+	offsets := candidateOffsets(s)
+	limit := v.MaxCandidates
+	if limit == 0 {
+		limit = DefaultMaxCandidates
+	}
+	if limit > 0 && len(offsets) > limit {
+		return nil, fmt.Errorf("input holds %d fence openings, more than the limit of %d", len(offsets), limit)
+	}
+
 	res := &Result{}
 	consumed := make([][2]int, 0, 2)
 
-	for _, off := range candidateOffsets(s) {
+	for _, off := range offsets {
 		// Skip candidates that fall inside an already-verified element.
 		if within(consumed, off) {
 			continue

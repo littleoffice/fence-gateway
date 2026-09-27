@@ -108,7 +108,7 @@ USER 1001:1001
 #
 # No HEALTHCHECK: the image is FROM scratch, with no shell or HTTP client for
 # one to run, and over stdio there is nothing to probe. In HTTP mode, probe
-# the listening port from the orchestrator (a TCP check).
+# GET /health from the orchestrator; it needs no credential.
 #
 # Verification behaviour is set by command-line flags (see README) appended
 # after the entrypoint; deployment by environment variables, e.g.:

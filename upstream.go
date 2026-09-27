@@ -28,11 +28,17 @@ import (
 type upstreamSession struct {
 	connect func(context.Context) (*mcp.ClientSession, error)
 	audit   *log.Logger
+	// onReconnect, when set, runs in its own goroutine with each session
+	// opened to replace a lost one — not with the first. A relay that
+	// restarts may come back with different tools, and the gateway's tool
+	// list was built from the old ones.
+	onReconnect func(*mcp.ClientSession)
 
 	// mu is held while connecting, so concurrent calls that find the session
 	// gone share one reconnect rather than each opening their own.
-	mu   sync.Mutex
-	sess *mcp.ClientSession
+	mu        sync.Mutex
+	sess      *mcp.ClientSession
+	connected bool // a session has been opened before
 }
 
 // session returns the current session, opening one if there is none.
@@ -53,6 +59,10 @@ func (u *upstreamSession) session() (*mcp.ClientSession, error) {
 		return nil, err
 	}
 	u.sess = s
+	if u.connected && u.onReconnect != nil {
+		go u.onReconnect(s)
+	}
+	u.connected = true
 	return s, nil
 }
 
