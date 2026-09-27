@@ -102,23 +102,23 @@ COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certifi
 # so it works on scratch.
 USER 1001:1001
 
-# No HEALTHCHECK: fence-gateway is a stdio MCP proxy, not a network server. It
-# does work only while a client is attached to its stdin/stdout, and it
-# exposes no port or /health endpoint to probe. A HEALTHCHECK would have
-# nothing meaningful to hit. Liveness is the responsibility of the parent MCP
-# client (Claude Desktop/Code/Cursor) that spawns it.
+# Two ways to run it. Over stdio (the default) the gateway is a subprocess
+# of the MCP client, which owns its liveness: run it with -i. With MCP_PORT
+# set it serves Streamable HTTP; publish the port.
 #
-# Configuration is by command-line flags (see README) appended after the
-# entrypoint, e.g.:
+# No HEALTHCHECK: the image is FROM scratch, with no shell or HTTP client for
+# one to run, and over stdio there is nothing to probe. In HTTP mode, probe
+# the listening port from the orchestrator (a TCP check).
+#
+# Verification behaviour is set by command-line flags (see README) appended
+# after the entrypoint; deployment by environment variables, e.g.:
 #   docker run --rm -i fence-gateway \
 #     -upstream https://relay.internal:8080/mcp -policy reject -pin <fp>
 #
-# Secrets (MCP_AUTH_TOKEN) are read from the runtime environment via
-# os.Getenv and are deliberately NOT declared as ENV here: baking a
+# Secrets (MCP_AUTH_TOKEN*, UPSTREAM_MCP_TOKEN, UPSTREAM_OAUTH_CLIENT_SECRET)
+# are read from the runtime environment, or from the matching *_FILE
+# variable, and are deliberately NOT declared as ENV here: baking a
 # secret-named ENV key into the image would persist it in image metadata and
-# is flagged by BuildKit's SecretsUsedInArgOrEnv check. Provide it at run time
-# with `-e MCP_AUTH_TOKEN=...` or your orchestrator's secret mechanism.
-#
-# -i (interactive stdin) is required because the proxy speaks JSON-RPC over
-# stdio.
+# is flagged by BuildKit's SecretsUsedInArgOrEnv check. Provide them at run
+# time with -e, a mounted file, or your orchestrator's secret mechanism.
 ENTRYPOINT ["/fence-gateway"]

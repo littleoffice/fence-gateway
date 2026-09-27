@@ -39,6 +39,16 @@ import (
 	fv "github.com/littleoffice/fence-gateway/fenceverify"
 )
 
+// defaultMaxAge is -max-age unless set. The relay stamps every fence when it
+// answers, cached reads included, so a genuine fence is seconds old when it
+// arrives; ten minutes leaves room for slow tool calls and clock drift while
+// keeping a captured response from being replayed indefinitely.
+const defaultMaxAge = 10 * time.Minute
+
+// fenceClockSkew bounds how far in the future a fence timestamp may be. Without
+// it a fence dated ahead of the gateway's clock never ages past -max-age.
+const fenceClockSkew = 2 * time.Minute
+
 // ServerVersion is stamped at build time via
 // -ldflags "-X main.ServerVersion=...". It is derived from `git describe` by
 // build.sh and the release workflow, and left as "dev" for plain `go build`.
@@ -87,13 +97,23 @@ func main() {
 		pin      = flag.String("pin", "", "pinned fence key fingerprint (16 hex chars, from the relay's startup banner)")
 		tofu     = flag.Bool("tofu", false, "pin the first key seen and refuse later changes")
 		paper    = flag.Bool("paper-scheme", false, "verify using the paper's literal Ed25519(SHA-256(C||M)) construction")
-		maxAge   = flag.Duration("max-age", 0, "reject fences older than this (0 disables)")
+		maxAge   = flag.Duration("max-age", defaultMaxAge, "reject fences older than this; the relay stamps each fence when it answers (0 disables)")
 		stripSig = flag.Bool("strip-signature", false, "remove signature attributes from verified fences before forwarding")
 		fenceVer = flag.String("fence-version", "auto", "oldest fence format to accept: auto (follow the relay's key endpoint), 1.0, or 1.1 (require the signed preamble)")
 		reqAll   = flag.Bool("require-all-fenced", false, "treat any unsigned text in a tool result as a failure, including the relay's unfenced no-results reply and error messages")
 		version  = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
+
+	// A secret on the command line is visible to every local user in the
+	// process list and lands in shell history. The flag keeps working, since
+	// removing it would break existing deployments, but says so.
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "token" {
+			fmt.Fprintln(os.Stderr, "fence-gateway: warning: -token puts the relay credential in the process "+
+				"list and shell history; set UPSTREAM_MCP_TOKEN or UPSTREAM_MCP_TOKEN_FILE instead")
+		}
+	})
 
 	if *version {
 		fmt.Println(ServerVersion)

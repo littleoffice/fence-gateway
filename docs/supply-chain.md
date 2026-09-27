@@ -192,8 +192,8 @@ Stated plainly, because a supply-chain document that sounds airtight is not
 trustworthy:
 
 - **The gateway is proof-of-concept.** The README says so. The verification
-  logic is tested (30 tests, including interop against the relay's real
-  `fence.go`), but this has not been through the kind of external security audit
+  logic is tested, including against output from the relay's real
+  `fence.go`, but this has not been through the kind of external security audit
   the relay had. Treat it accordingly.
 - **The trust the signatures buy is bounded by key acquisition.** This is a
   property of the design, documented at length in the README's "Ephemeral keys
