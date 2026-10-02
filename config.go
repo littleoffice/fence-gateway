@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -51,6 +52,20 @@ type httpConfig struct {
 	// chain in the middle, leaving the relay's session state stranded on
 	// whichever pod answered first.
 	stateless bool
+	// metricsToken is the digest of "Bearer " + MCP_METRICS_TOKEN, the
+	// credential for /metrics and /metrics/relay; zero when unset, which
+	// closes both. See requireMetricsAuth.
+	metricsToken tokenDigest
+	// relayMetricsToken is UPSTREAM_METRICS_TOKEN, the relay's own
+	// MCP_METRICS_TOKEN, and relayMetricsURL is UPSTREAM_METRICS_URL. A
+	// token turns on /metrics/relay; the URL defaults to the upstream
+	// origin + /metrics in main().
+	relayMetricsToken string
+	relayMetricsURL   string
+	// metrics and relayMetrics are the runtime halves, built in main() like
+	// oauth. Either may be nil.
+	metrics      *metrics
+	relayMetrics *relayMetrics
 }
 
 // upstreamAuthMode selects which credential the gateway presents to the relay.
@@ -220,11 +235,68 @@ func httpConfigFromEnv() (httpConfig, error) {
 		return c, err
 	}
 	c.authTokens = tokens
+
+	mt, err := secretFromEnv("MCP_METRICS_TOKEN")
+	if err != nil {
+		return c, err
+	}
+	if mt != "" {
+		if len(mt) < minAuthTokenLen {
+			return c, fmt.Errorf("MCP_METRICS_TOKEN is %d characters; minimum is %d (generate one with `openssl rand -hex 32`)",
+				len(mt), minAuthTokenLen)
+		}
+		c.metricsToken = sha256.Sum256([]byte("Bearer " + mt))
+		// A tenant is not a scraper: the relay's page, served here too,
+		// counts the hosts fetched for every caller.
+		if _, clash := c.authTokens[c.metricsToken]; clash {
+			return c, errors.New("MCP_METRICS_TOKEN must not be one of the MCP auth tokens: " +
+				"/metrics/relay names the hosts fetched for every caller")
+		}
+	}
+	if c.relayMetricsToken, err = secretFromEnv("UPSTREAM_METRICS_TOKEN"); err != nil {
+		return c, err
+	}
+	c.relayMetricsURL = strings.TrimSpace(os.Getenv("UPSTREAM_METRICS_URL"))
+	if c.relayMetricsURL != "" {
+		if c.relayMetricsToken == "" {
+			return c, errors.New("UPSTREAM_METRICS_URL is set but UPSTREAM_METRICS_TOKEN is not: " +
+				"the relay's /metrics refuses every request without its MCP_METRICS_TOKEN")
+		}
+		u, err := url.Parse(c.relayMetricsURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return c, fmt.Errorf("UPSTREAM_METRICS_URL %q is not an http(s) URL", c.relayMetricsURL)
+		}
+	}
 	return c, nil
+}
+
+// secretFromEnv reads a credential from NAME, or from the file NAME_FILE
+// names (the form orchestrators that mount secrets use), not both. Surrounding
+// whitespace is trimmed: a mounted secret usually ends in a newline.
+func secretFromEnv(name string) (string, error) {
+	v := strings.TrimSpace(os.Getenv(name))
+	f := strings.TrimSpace(os.Getenv(name + "_FILE"))
+	if f == "" {
+		return v, nil
+	}
+	if v != "" {
+		return "", fmt.Errorf("set %s or %s_FILE, not both", name, name)
+	}
+	data, err := os.ReadFile(f)
+	if err != nil {
+		return "", fmt.Errorf("read %s_FILE: %w", name, err)
+	}
+	if v = strings.TrimSpace(string(data)); v == "" {
+		return "", fmt.Errorf("%s_FILE %q is empty", name, f)
+	}
+	return v, nil
 }
 
 func (c httpConfig) httpMode() bool   { return c.port != "" }
 func (c httpConfig) tlsEnabled() bool { return c.tlsCert != "" && c.tlsKey != "" }
+func (c httpConfig) metricsEnabled() bool {
+	return c.metricsToken != tokenDigest{}
+}
 
 // identityFor resolves an "Authorization" header value to the audit identity
 // it authenticated as, or "" when it matches no configured credential. It

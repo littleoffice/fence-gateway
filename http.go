@@ -59,6 +59,13 @@ func newHTTPHandler(server *mcp.Server, hc httpConfig, audit *log.Logger) http.H
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("ok\n"))
 	})
+	// Prometheus metrics: the gateway's own, and the relay's fetched through
+	// the gateway so the relay needs no route from the scraper. Both behind
+	// MCP_METRICS_TOKEN, never the MCP tokens (see metrics.go). Registered
+	// even when closed, so a scrape gets a 401 that says realm="metrics"
+	// instead of falling through to the MCP handler.
+	mux.Handle("GET /metrics", requireMetricsAuth(hc, audit, hc.metrics))
+	mux.Handle("GET /metrics/relay", requireMetricsAuth(hc, audit, hc.relayMetrics))
 	// RFC 9728 protected-resource metadata — unauthenticated by design (a client
 	// needs it *before* it can obtain a token), registered only when OAuth is on.
 	// Its specific path takes routing precedence over the "/" MCP handler.
@@ -106,6 +113,7 @@ func requireAuth(hc httpConfig, audit *log.Logger, next http.Handler) http.Handl
 		// already passed above, so it is never held up by this.
 		client := clientAddr(r, hc.trustForwarded)
 		if failures.exceeded(client) {
+			hc.metrics.authThrottle()
 			if audit != nil {
 				audit.Printf("auth.throttled method=%s path=%q remote=%s", r.Method, r.URL.Path, client)
 			}
@@ -125,6 +133,7 @@ func requireAuth(hc httpConfig, audit *log.Logger, next http.Handler) http.Handl
 		}
 
 		failures.record(client)
+		hc.metrics.authFailed(authEndpointMCP)
 		if oauthOn {
 			w.Header().Set("WWW-Authenticate",
 				`Bearer realm="mcp", resource_metadata="`+resourceMetadataURL(r, hc.trustForwarded)+`"`)
@@ -176,6 +185,20 @@ func (g *gateway) runHTTP(ctx context.Context, server *mcp.Server, hc httpConfig
 	// Cancel on SIGINT/SIGTERM for a clean drain.
 	sctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// A closed /metrics is the default, and from the scraper's side it looks
+	// like a scrape-config mistake. Say so here.
+	if !hc.metricsEnabled() {
+		g.audit.Printf("metrics.closed hint=%q",
+			"/metrics and /metrics/relay answer 401 until MCP_METRICS_TOKEN is set; "+
+				"generate one with `openssl rand -hex 32`, distinct from every MCP token")
+	} else {
+		relay := "off (set UPSTREAM_METRICS_TOKEN)"
+		if hc.relayMetrics != nil {
+			relay = hc.relayMetrics.url
+		}
+		g.audit.Printf("metrics.enabled relay=%q", relay)
+	}
 
 	g.audit.Printf("http.listen addr=%q tls=%t auth_identities=%d oauth=%q",
 		srv.Addr, hc.tlsEnabled(), len(hc.authTokens), hc.oauth.describe())
