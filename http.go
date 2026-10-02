@@ -64,8 +64,13 @@ func newHTTPHandler(server *mcp.Server, hc httpConfig, audit *log.Logger) http.H
 	// MCP_METRICS_TOKEN, never the MCP tokens (see metrics.go). Registered
 	// even when closed, so a scrape gets a 401 that says realm="metrics"
 	// instead of falling through to the MCP handler.
-	mux.Handle("GET /metrics", requireMetricsAuth(hc, audit, hc.metrics))
+	mux.Handle("GET /metrics/gateway", requireMetricsAuth(hc, audit, hc.metrics))
 	mux.Handle("GET /metrics/relay", requireMetricsAuth(hc, audit, hc.relayMetrics))
+	// A scraper left at Prometheus's default path gets told where to look,
+	// rather than an MCP error. The two paths are no secret.
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "use /metrics/gateway or /metrics/relay", http.StatusNotFound)
+	})
 	// RFC 9728 protected-resource metadata — unauthenticated by design (a client
 	// needs it *before* it can obtain a token), registered only when OAuth is on.
 	// Its specific path takes routing precedence over the "/" MCP handler.
@@ -186,11 +191,11 @@ func (g *gateway) runHTTP(ctx context.Context, server *mcp.Server, hc httpConfig
 	sctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// A closed /metrics is the default, and from the scraper's side it looks
+	// Closed metrics are the default, and from the scraper's side it looks
 	// like a scrape-config mistake. Say so here.
 	if !hc.metricsEnabled() {
 		g.audit.Printf("metrics.closed hint=%q",
-			"/metrics and /metrics/relay answer 401 until MCP_METRICS_TOKEN is set; "+
+			"/metrics/gateway and /metrics/relay answer 401 until MCP_METRICS_TOKEN is set; "+
 				"generate one with `openssl rand -hex 32`, distinct from every MCP token")
 	} else {
 		relay := "off (set UPSTREAM_METRICS_TOKEN)"

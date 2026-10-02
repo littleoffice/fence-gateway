@@ -14,8 +14,8 @@ import (
 
 // ── Metrics ───────────────────────────────────────────────────────────────────
 //
-// The gateway serves Prometheus text at GET /metrics, and the relay's own
-// metrics at GET /metrics/relay. Both sit behind MCP_METRICS_TOKEN, a
+// The gateway serves its own Prometheus text at GET /metrics/gateway, and the
+// relay's at GET /metrics/relay. Both sit behind MCP_METRICS_TOKEN, a
 // credential of their own: the relay's endpoint names the hosts fetched for
 // every caller, and a scraper is not a tenant. With the token unset both
 // endpoints answer 401 to everyone, the same closed default the relay takes.
@@ -198,66 +198,75 @@ func (m *metrics) observeUpstream(d time.Duration) {
 // ServeHTTP writes the Prometheus text exposition format, version 0.0.4.
 func (m *metrics) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-	m.write(w)
+	// A failed write is a scraper that went away; there is no one to tell.
+	_ = m.write(w)
 }
 
-func (m *metrics) write(w io.Writer) {
+// write renders every series to w and returns the first write error. Writing
+// stops having effect after one fails.
+func (m *metrics) write(w io.Writer) (err error) {
 	if m == nil {
 		m = newMetrics()
 	}
+	printf := func(format string, a ...any) {
+		if err == nil {
+			_, err = fmt.Fprintf(w, format, a...)
+		}
+	}
 	header := func(name, typ, help string) {
-		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n", name, help, name, typ)
+		printf("# HELP %s %s\n# TYPE %s %s\n", name, help, name, typ)
 	}
 
 	header("fence_gateway_build_info", "gauge", "Build version of the running gateway; always 1.")
-	fmt.Fprintf(w, "fence_gateway_build_info{version=%q} 1\n", escapeLabel(ServerVersion))
+	printf("fence_gateway_build_info{version=%q} 1\n", escapeLabel(ServerVersion))
 
 	header("fence_gateway_tool_calls_total", "counter",
 		"Tool calls through the gateway, by what happened to the result.")
 	for i, l := range outcomeLabels {
-		fmt.Fprintf(w, "fence_gateway_tool_calls_total{outcome=%q} %d\n", l, m.toolCalls[i].Load())
+		printf("fence_gateway_tool_calls_total{outcome=%q} %d\n", l, m.toolCalls[i].Load())
 	}
 
 	header("fence_gateway_verification_failures_total", "counter",
 		"Tool results that failed verification, by reason; a result failing for several reasons counts under each.")
 	for i, l := range reasonLabels {
-		fmt.Fprintf(w, "fence_gateway_verification_failures_total{reason=%q} %d\n", l, m.failures[i].Load())
+		printf("fence_gateway_verification_failures_total{reason=%q} %d\n", l, m.failures[i].Load())
 	}
 
 	header("fence_gateway_fences_verified_total", "counter", "Individual fences whose signature verified.")
-	fmt.Fprintf(w, "fence_gateway_fences_verified_total %d\n", m.fencesVerified.Load())
+	printf("fence_gateway_fences_verified_total %d\n", m.fencesVerified.Load())
 
 	header("fence_gateway_key_rotations_total", "counter", "Changes of the relay's fence signing key seen by the gateway.")
-	fmt.Fprintf(w, "fence_gateway_key_rotations_total %d\n", m.keyRotations.Load())
+	printf("fence_gateway_key_rotations_total %d\n", m.keyRotations.Load())
 
 	header("fence_gateway_upstream_sessions_lost_total", "counter",
 		"Relay sessions found gone (relay restart or idle expiry) and replaced.")
-	fmt.Fprintf(w, "fence_gateway_upstream_sessions_lost_total %d\n", m.sessionsLost.Load())
+	printf("fence_gateway_upstream_sessions_lost_total %d\n", m.sessionsLost.Load())
 
 	header("fence_gateway_auth_failures_total", "counter", "HTTP requests refused with 401, by endpoint.")
 	for i, l := range authEndpointLabels {
-		fmt.Fprintf(w, "fence_gateway_auth_failures_total{endpoint=%q} %d\n", l, m.authFailures[i].Load())
+		printf("fence_gateway_auth_failures_total{endpoint=%q} %d\n", l, m.authFailures[i].Load())
 	}
 
 	header("fence_gateway_auth_throttled_total", "counter",
 		"MCP requests refused with 429 after too many failed logins from one client.")
-	fmt.Fprintf(w, "fence_gateway_auth_throttled_total %d\n", m.authThrottled.Load())
+	printf("fence_gateway_auth_throttled_total %d\n", m.authThrottled.Load())
 
 	header("fence_gateway_relay_metrics_errors_total", "counter",
 		"Failed fetches of the relay's /metrics for /metrics/relay.")
-	fmt.Fprintf(w, "fence_gateway_relay_metrics_errors_total %d\n", m.relayScrapes.Load())
+	printf("fence_gateway_relay_metrics_errors_total %d\n", m.relayScrapes.Load())
 
 	const h = "fence_gateway_upstream_call_duration_seconds"
 	header(h, "histogram", "Duration of tool calls to the relay, including failed ones.")
 	var cum int64
 	for i, b := range upstreamDurationBuckets {
 		cum += m.durBuckets[i].Load()
-		fmt.Fprintf(w, "%s_bucket{le=\"%g\"} %d\n", h, b, cum)
+		printf("%s_bucket{le=\"%g\"} %d\n", h, b, cum)
 	}
 	cum += m.durBuckets[len(upstreamDurationBuckets)].Load()
-	fmt.Fprintf(w, "%s_bucket{le=\"+Inf\"} %d\n", h, cum)
-	fmt.Fprintf(w, "%s_sum %g\n", h, float64(m.durSumUS.Load())/1e6)
-	fmt.Fprintf(w, "%s_count %d\n", h, m.durCount.Load())
+	printf("%s_bucket{le=\"+Inf\"} %d\n", h, cum)
+	printf("%s_sum %g\n", h, float64(m.durSumUS.Load())/1e6)
+	printf("%s_count %d\n", h, m.durCount.Load())
+	return err
 }
 
 // escapeLabel keeps a label value to characters that need no escaping in the
@@ -272,7 +281,7 @@ func escapeLabel(s string) string {
 	}, s)
 }
 
-// requireMetricsAuth gates /metrics and /metrics/relay behind
+// requireMetricsAuth gates /metrics/gateway and /metrics/relay behind
 // MCP_METRICS_TOKEN. With none configured every request is refused, including
 // one carrying a valid MCP token: a closed endpoint until a credential exists
 // discloses nothing, where falling back to the MCP tokens would hand every

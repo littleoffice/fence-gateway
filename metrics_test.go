@@ -50,7 +50,7 @@ func get(t *testing.T, h http.Handler, path, authz string) *httptest.ResponseRec
 // through to the MCP handler.
 func TestMetricsClosedWithoutToken(t *testing.T) {
 	h, m := metricsHandler("", nil)
-	for _, path := range []string{"/metrics", "/metrics/relay"} {
+	for _, path := range []string{"/metrics/gateway", "/metrics/relay"} {
 		rr := get(t, h, path, "Bearer "+testMCPToken)
 		if rr.Code != http.StatusUnauthorized {
 			t.Fatalf("GET %s = %d, want 401", path, rr.Code)
@@ -67,13 +67,13 @@ func TestMetricsClosedWithoutToken(t *testing.T) {
 func TestMetricsServedWithToken(t *testing.T) {
 	h, _ := metricsHandler(testMetricsToken, nil)
 
-	if rr := get(t, h, "/metrics", "Bearer "+testMCPToken); rr.Code != http.StatusUnauthorized {
-		t.Fatalf("an MCP token on /metrics = %d, want 401", rr.Code)
+	if rr := get(t, h, "/metrics/gateway", "Bearer "+testMCPToken); rr.Code != http.StatusUnauthorized {
+		t.Fatalf("an MCP token on /metrics/gateway = %d, want 401", rr.Code)
 	}
 	// A refused scrape is itself counted, and the next one shows it.
-	rr := get(t, h, "/metrics", "Bearer "+testMetricsToken)
+	rr := get(t, h, "/metrics/gateway", "Bearer "+testMetricsToken)
 	if rr.Code != http.StatusOK {
-		t.Fatalf("GET /metrics = %d %q", rr.Code, rr.Body.String())
+		t.Fatalf("GET /metrics/gateway = %d %q", rr.Code, rr.Body.String())
 	}
 	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain; version=0.0.4") {
 		t.Errorf("Content-Type = %q", ct)
@@ -88,8 +88,18 @@ func TestMetricsServedWithToken(t *testing.T) {
 		`fence_gateway_build_info{version="dev"} 1`,
 	} {
 		if !strings.Contains(body, want+"\n") {
-			t.Errorf("/metrics lacks %q", want)
+			t.Errorf("/metrics/gateway lacks %q", want)
 		}
+	}
+}
+
+// Bare /metrics, Prometheus's default, points at the two real paths instead
+// of falling through to the MCP handler.
+func TestBareMetricsPathPointsOnward(t *testing.T) {
+	h, _ := metricsHandler(testMetricsToken, nil)
+	rr := get(t, h, "/metrics", "")
+	if rr.Code != http.StatusNotFound || !strings.Contains(rr.Body.String(), "/metrics/gateway") {
+		t.Fatalf("GET /metrics = %d %q, want 404 naming /metrics/gateway", rr.Code, rr.Body.String())
 	}
 }
 
@@ -292,7 +302,7 @@ func TestVerifyOutcomesCounted(t *testing.T) {
 	}
 }
 
-// The full path: a call through the HTTP transport shows up in /metrics.
+// The full path: a tool call shows up in the gateway metrics.
 func TestToolCallShowsInMetrics(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	g := testGateway(PolicyReject, pub)
@@ -313,7 +323,9 @@ func TestToolCallShowsInMetrics(t *testing.T) {
 		t.Fatal(err)
 	}
 	var sb strings.Builder
-	g.hc.metrics.write(&sb)
+	if err := g.hc.metrics.write(&sb); err != nil {
+		t.Fatal(err)
+	}
 	for _, want := range []string{
 		`fence_gateway_tool_calls_total{outcome="verified"} 1`,
 		"fence_gateway_fences_verified_total 1",

@@ -53,7 +53,7 @@ type httpConfig struct {
 	// whichever pod answered first.
 	stateless bool
 	// metricsToken is the digest of "Bearer " + MCP_METRICS_TOKEN, the
-	// credential for /metrics and /metrics/relay; zero when unset, which
+	// credential for /metrics/gateway and /metrics/relay; zero when unset, which
 	// closes both. See requireMetricsAuth.
 	metricsToken tokenDigest
 	// relayMetricsToken is UPSTREAM_METRICS_TOKEN, the relay's own
