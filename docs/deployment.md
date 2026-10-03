@@ -40,17 +40,26 @@ key fetched over plain HTTP from another machine stops the gateway at startup.
 
 This extends the relay's own `deploy/podman` setup. Today Caddy publishes the
 relay at `https://<host>/mcp`. The changes put the gateway in its place and
-give the relay a network only the gateway and SearXNG share:
+give every hop a network of its own, so each service is reachable only from
+the one in front of it:
 
 | Network | Members | Purpose |
 |---|---|---|
 | `edge` | caddy, fence-gateway, searxng | what Caddy can reach |
-| `relay` (internal) | fence-gateway, mcp-searxng-relay, searxng | the only way to the relay |
+| `relay` (internal) | fence-gateway, mcp-searxng-relay | the only way to the relay |
+| `search` (internal) | mcp-searxng-relay, searxng | the relay's line to SearXNG |
 | `egress` | mcp-searxng-relay | the relay's own route to the internet, shared with nobody |
 | `backend` (internal) | searxng, valkey | unchanged |
 
 Caddy is no longer on any network with the relay, so even a mistake in the
-Caddyfile cannot route to it.
+Caddyfile cannot route to it. The gateway is not on `search`: it only speaks
+MCP to the relay and has no reason to reach SearXNG.
+
+SearXNG stays on `edge` only if people use its web UI through Caddy. That is a
+second front door, and anyone who gets through it can search without passing
+the relay's auth, rate limits or audit log. So put single sign-on in front of
+it (below). If only agents use SearXNG, take it off `edge` and drop its Caddy
+route entirely.
 
 `docker-compose.yaml`, the services that change:
 
@@ -77,15 +86,17 @@ services:
       FENCE_SIGNING_KEY_FILE: /run/secrets/fence-key
     volumes:
       - ./secrets/fence-key.pem:/run/secrets/fence-key:ro
-    networks: [relay, egress]              # was [edge]; no ports: section
+    networks: [relay, search, egress]      # was [edge]; no ports: section
 
   searxng:
-    networks: [edge, backend, relay]       # the relay searches through it
+    networks: [edge, search, backend]     # edge only for the web UI, behind SSO
 
 networks:
   edge:
     internal: false
   relay:
+    internal: true
+  search:
     internal: true
   egress:
     internal: false
@@ -109,7 +120,9 @@ MCP_STATELESS=true            # the same value as the relay's MCP_STATELESS
 For several users set `UPSTREAM_MCP_AUTH_MODE=exchange` and the
 `UPSTREAM_OAUTH_*` settings instead ([token exchange](token-exchange.md)).
 
-`Caddyfile`, point `/mcp` at the gateway:
+`Caddyfile`, point `/mcp` at the gateway, and put the SearXNG web UI behind
+single sign-on (here [oauth2-proxy](https://oauth2-proxy.github.io/oauth2-proxy/),
+running as its own container on `edge`):
 
 ```caddyfile
 handle_path /mcp* {
@@ -117,7 +130,26 @@ handle_path /mcp* {
         flush_interval -1
     }
 }
+
+handle /oauth2/* {
+    reverse_proxy oauth2-proxy:4180
+}
+
+handle {
+    forward_auth oauth2-proxy:4180 {
+        uri /oauth2/auth
+        @unauthenticated status 401
+        handle_response @unauthenticated {
+            redir * /oauth2/sign_in?rd={scheme}://{host}{uri}
+        }
+    }
+    reverse_proxy searxng:8080
+}
 ```
+
+Agents never go through oauth2-proxy: `/mcp` is bearer-only at the gateway.
+The relay repository's `deploy/podman` ships this layout complete, with the
+oauth2-proxy service and its settings.
 
 **Check it.** From Caddy, the relay must be unreachable and the gateway
 reachable:
@@ -126,6 +158,20 @@ reachable:
 podman exec caddy wget -qO- -T 5 http://mcp-searxng-relay:3000/health   # must fail: bad address
 podman exec caddy wget -qO- -T 5 http://fence-gateway:9090/              # answers (401 without a token)
 podman logs fence-gateway | grep -E 'fence.key.loaded|upstream.connected'
+```
+
+The gateway must not reach SearXNG either. Its image has no shell, so check
+from a throwaway container sharing its network namespace:
+
+```bash
+podman run --rm --network container:fence-gateway docker.io/library/busybox \
+  wget -qO- -T 5 http://searxng:8080/                                    # must fail: bad address
+```
+
+And from outside, the web UI must ask for a login:
+
+```bash
+curl -sI https://<host>/ | head -1                                       # 302 to /oauth2/sign_in
 ```
 
 ## Kubernetes / searxng-helm
