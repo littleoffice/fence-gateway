@@ -28,6 +28,7 @@ import (
 type upstreamSession struct {
 	connect func(context.Context) (*mcp.ClientSession, error)
 	audit   *log.Logger
+	metrics *metrics // counts sessions found gone; may be nil
 	// onReconnect, when set, runs in its own goroutine with each session
 	// opened to replace a lost one — not with the first. A relay that
 	// restarts may come back with different tools, and the gateway's tool
@@ -89,6 +90,7 @@ func (u *upstreamSession) CallTool(ctx context.Context, p *mcp.CallToolParams) (
 		return res, err
 	}
 	u.audit.Printf("upstream.session.lost tool=%q err=%q", p.Name, err)
+	u.metrics.sessionLost()
 	u.discard(s)
 	if s, err = u.session(); err != nil {
 		return nil, err
@@ -146,6 +148,7 @@ type sessionPool struct {
 	shared  *upstreamSession // stdio, calls with no conversation, stateless relays
 	connect func(context.Context) (*mcp.ClientSession, error)
 	audit   *log.Logger
+	metrics *metrics
 
 	mu     sync.Mutex
 	byConv map[string]*pooledSession
@@ -178,7 +181,7 @@ func (p *sessionPool) forConversation(key string, ended *mcp.ServerSession) *ups
 		e.used = now
 		return e.up
 	}
-	up := &upstreamSession{connect: p.connect, audit: p.audit}
+	up := &upstreamSession{connect: p.connect, audit: p.audit, metrics: p.metrics}
 	if p.byConv == nil {
 		p.byConv = make(map[string]*pooledSession)
 	}

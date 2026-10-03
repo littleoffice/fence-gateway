@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -140,6 +141,7 @@ func (g *gateway) toolHandler(name string) mcp.ToolHandler {
 				// every other caller — the collapse passthrough exists to
 				// prevent — and it would do so silently.
 				g.audit.Printf("upstream.credential.missing tool=%q", name)
+				g.hc.metrics.recordCall(outcomeBlocked, 0)
 				return blocked("the call carried no credential to forward to the upstream relay, " +
 					"and the gateway does not substitute one"), nil
 			}
@@ -150,6 +152,7 @@ func (g *gateway) toolHandler(name string) mcp.ToolHandler {
 			tok, err := g.relayTokenFor(ctx, authz)
 			if err != nil {
 				g.audit.Printf("upstream.exchange.failed tool=%q identity=%q err=%q", name, identity, err)
+				g.hc.metrics.recordCall(outcomeBlocked, 0)
 				return blocked("the gateway could not obtain a relay credential for this caller"), nil
 			}
 			ctx = withUpstreamCredential(ctx, "Bearer "+tok)
@@ -162,10 +165,12 @@ func (g *gateway) toolHandler(name string) mcp.ToolHandler {
 		// relay keeps its fetch history per conversation (upstream.go).
 		conv := conversationID(req)
 		ctx = withConversation(ctx, conv)
+		start := time.Now()
 		res, err := g.upstreamFor(identity, conv, req.Session).CallTool(ctx, &mcp.CallToolParams{
 			Name:      name,
 			Arguments: req.Params.Arguments,
 		})
+		g.hc.metrics.observeUpstream(time.Since(start))
 		if err != nil {
 			// A transport/protocol failure talking to the relay. Returned
 			// as a Go error, which the SDK surfaces as a protocol error to
@@ -175,6 +180,7 @@ func (g *gateway) toolHandler(name string) mcp.ToolHandler {
 			// and transport detail. That goes to the audit log; the client,
 			// and the model behind it, get a fixed message.
 			g.audit.Printf("upstream.error tool=%q identity=%q err=%q", name, identity, err)
+			g.hc.metrics.recordCall(outcomeUpstreamError, 0)
 			return nil, errUpstreamCall
 		}
 		return g.verify(ctx, name, identity, res), nil
@@ -222,13 +228,23 @@ func (g *gateway) ownToken() func(context.Context) (string, error) {
 // carries, and applies the configured policy. It is the SDK-typed counterpart
 // of the checker described in arXiv:2511.19727 §4.5.
 func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.CallToolResult) *mcp.CallToolResult {
+	out, outcome, why := g.checkResult(ctx, tool, identity, res)
+	g.hc.metrics.recordCall(outcome, why)
+	return out
+}
+
+// checkResult is verify, also reporting what became of the result and why it
+// failed, for the metrics.
+func (g *gateway) checkResult(ctx context.Context, tool, identity string, res *mcp.CallToolResult) (*mcp.CallToolResult, callOutcome, failReasons) {
+	var why failReasons
 	keys, err := g.keys.Keys(ctx)
 	if err != nil || len(keys) == 0 {
 		g.audit.Printf("fence.verify.nokey tool=%q identity=%q err=%q", tool, identity, err)
+		why.add(reasonNoKey)
 		if g.cfg.policy == PolicyReject {
-			return g.reject(identity, "fence verification unavailable: no public key")
+			return g.reject(identity, "fence verification unavailable: no public key"), outcomeRejected, why
 		}
-		return res
+		return res, outcomePassedUnverified, why
 	}
 
 	v := &fv.Verifier{Keys: keys, Scheme: g.cfg.scheme, MaxAge: g.cfg.maxAge, MaxClockSkew: fenceClockSkew, RequireNonce: true}
@@ -244,6 +260,7 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 	// structured JSON beside the text — can carry words for the model that no
 	// fence covers, so it is a failure rather than something to pass along.
 	if res.StructuredContent != nil {
+		why.add(reasonUnsupportedContent)
 		problems = append(problems, "tool result carries structured content, which cannot be fenced")
 	}
 	textBytes := 0
@@ -253,6 +270,7 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 			textBytes += len(c.Text)
 		case *mcp.ImageContent:
 		default:
+			why.add(reasonUnsupportedContent)
 			problems = append(problems, fmt.Sprintf("tool result carries %T, which cannot be fenced", c))
 		}
 	}
@@ -261,8 +279,9 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 	// relay produces, so it is refused unread rather than worked through.
 	if textBytes > maxResultText {
 		g.audit.Printf("fence.too_large tool=%q identity=%q bytes=%d", tool, identity, textBytes)
+		why.add(reasonTooLarge)
 		return g.reject(identity, fmt.Sprintf("tool result of %d bytes exceeds the %d-byte verification limit",
-			textBytes, maxResultText))
+			textBytes, maxResultText)), outcomeRejected, why
 	}
 
 	for _, c := range res.Content {
@@ -298,6 +317,7 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 		total++
 		r, err := v.Verify(tc.Text)
 		if err != nil {
+			why.add(reasonInvalidFence)
 			problems = append(problems, err.Error())
 			continue
 		}
@@ -317,9 +337,15 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 		for _, rj := range r.Rejections {
 			g.audit.Printf("fence.rejected tool=%q identity=%q offset=%d reason=%q snippet=%q",
 				tool, identity, rj.Offset, rj.Reason, rj.Snippet)
+			why.add(reasonInvalidFence)
 			problems = append(problems, rj.Reason)
 		}
 		if len(r.Fences) == 0 {
+			// Counted only when nothing was rejected either: a fence that
+			// failed is already invalid_fence.
+			if len(r.Rejections) == 0 {
+				why.add(reasonNoFence)
+			}
 			problems = append(problems, "no verifiable fence in tool result")
 			continue
 		}
@@ -328,6 +354,7 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 			if t, ok := g.keys.(interface{ Touch(string) }); ok && f.Extra["kid"] != "" {
 				t.Touch(f.Extra["kid"])
 			}
+			g.hc.metrics.fenceVerified()
 			g.audit.Printf("fence.verified tool=%q identity=%q rating=%s type=%s source=%q nonce=%s bytes=%d",
 				tool, identity, f.Rating, f.Type, f.Source, f.Nonce, len(f.Content))
 		}
@@ -337,13 +364,20 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 			// nothing binds it to the fence it describes.
 			g.audit.Printf("fence.unsigned_text tool=%q identity=%q regions=%d first=%.80q",
 				tool, identity, len(r.UnsignedRegions), r.UnsignedRegions[0])
+			why.add(reasonUnsignedText)
 			problems = append(problems, fmt.Sprintf("%d unsigned region(s) outside the fence", len(r.UnsignedRegions)))
 		}
 		// Every signature above holds on its own; this checks how the fences
 		// fit together — above all that a 1.1 content fence still has the
 		// preamble telling the model to treat it as data.
-		for _, p := range append(fv.CheckLayout(r), g.checkFormatDowngrade(ctx, r)...) {
+		for _, p := range fv.CheckLayout(r) {
 			g.audit.Printf("fence.layout tool=%q identity=%q problem=%q", tool, identity, p)
+			why.add(reasonLayout)
+			problems = append(problems, p)
+		}
+		for _, p := range g.checkFormatDowngrade(ctx, r) {
+			g.audit.Printf("fence.layout tool=%q identity=%q problem=%q", tool, identity, p)
+			why.add(reasonFormat)
 			problems = append(problems, p)
 		}
 		verified++
@@ -365,6 +399,7 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 	if unfenced > 0 {
 		g.audit.Printf("fence.unfenced_block tool=%q identity=%q blocks=%d fences=%d",
 			tool, identity, unfenced, total)
+		why.add(reasonUnfencedText)
 		problems = append(problems,
 			fmt.Sprintf("%d text block(s) carrying no fence at all", unfenced))
 	}
@@ -380,22 +415,22 @@ func (g *gateway) verify(ctx context.Context, tool, identity string, res *mcp.Ca
 			}
 		}
 		if total == 0 {
-			return res
+			return res, outcomeUnfenced, why
 		}
 		g.audit.Printf("fence.ok tool=%q identity=%q blocks=%d", tool, identity, verified)
 		if g.cfg.stripSig {
-			return stripSignatures(res, fenceStarts)
+			return stripSignatures(res, fenceStarts), outcomeVerified, why
 		}
-		return res
+		return res, outcomeVerified, why
 	}
 
 	switch g.cfg.policy {
 	case PolicyReject:
-		return g.reject(identity, strings.Join(problems, "; "))
+		return g.reject(identity, strings.Join(problems, "; ")), outcomeRejected, why
 	case PolicyAnnotate:
-		return annotate(res, strings.Join(problems, "; "))
+		return annotate(res, strings.Join(problems, "; ")), outcomeAnnotated, why
 	default:
-		return res
+		return res, outcomePassedUnverified, why
 	}
 }
 

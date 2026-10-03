@@ -149,6 +149,7 @@ func main() {
 	if err != nil {
 		fatal("%v", err)
 	}
+	hc.metrics = newMetrics()
 
 	// How the gateway authenticates to the relay, and with whose credential.
 	ua, err := upstreamAuthFromEnv(*token)
@@ -191,6 +192,7 @@ func main() {
 		MinRefreshInterval: 2 * time.Second,
 		OnKeyChange: func(old, nw string) {
 			audit.Printf("fence.key.rotated old=%s new=%s", old, nw)
+			hc.metrics.keyRotated()
 		},
 	}
 
@@ -244,6 +246,14 @@ func main() {
 		}
 	}
 
+	if hc.relayMetricsToken != "" {
+		mu := hc.relayMetricsURL
+		if mu == "" {
+			mu = upstreamPath(*upstream, "/metrics")
+		}
+		hc.relayMetrics = newRelayMetrics(mu, hc.relayMetricsToken, audit, hc.metrics)
+	}
+
 	g := &gateway{cfg: cfg, hc: hc, ua: ua, keys: keys, audit: audit, exchanger: exchanger}
 
 	// Say, once, how callers reach the relay — and warn when several of them
@@ -274,11 +284,11 @@ func main() {
 	//
 	// After that the session is replaced whenever the relay drops it (a
 	// restart, or its idle-session janitor) — see upstream.go.
-	g.up = &upstreamSession{connect: g.connectUpstream, audit: audit}
+	g.up = &upstreamSession{connect: g.connectUpstream, audit: audit, metrics: hc.metrics}
 	if _, err := g.up.session(); err != nil {
 		fatal("connect upstream %q: %v", cfg.upstream, err)
 	}
-	g.pool = &sessionPool{shared: g.up, connect: g.connectUpstream, audit: audit}
+	g.pool = &sessionPool{shared: g.up, connect: g.connectUpstream, audit: audit, metrics: hc.metrics}
 	defer func() { _ = g.pool.Close() }()
 
 	// Build the downstream MCP server and register a verifying proxy handler
@@ -455,13 +465,18 @@ func upstreamHost(endpoint string) string {
 	return u.Host
 }
 
-func deriveKeyURL(upstream string) string {
+func deriveKeyURL(upstream string) string { return upstreamPath(upstream, "/fence/public-key") }
+
+// upstreamPath replaces the path of the upstream endpoint with path, keeping
+// its scheme and authority: the relay serves its key and metrics endpoints
+// beside /mcp.
+func upstreamPath(upstream, path string) string {
 	if i := strings.Index(upstream, "://"); i >= 0 {
 		if j := strings.Index(upstream[i+3:], "/"); j >= 0 {
-			return upstream[:i+3+j] + "/fence/public-key"
+			return upstream[:i+3+j] + path
 		}
 	}
-	return strings.TrimRight(upstream, "/") + "/fence/public-key"
+	return strings.TrimRight(upstream, "/") + path
 }
 
 func fatal(f string, a ...any) {
