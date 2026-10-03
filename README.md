@@ -303,7 +303,9 @@ Build it yourself reproducibly with `./build.sh <version>` (podman), or see
 reproducibility, and release-attestation story,
 [`docs/SECURITY.md`](docs/SECURITY.md) for vulnerability reporting, and
 [`docs/conformance.md`](docs/conformance.md) for how the gateway maps onto the
-paper's Security Gateway (§4.5, §7.4.3).
+paper's Security Gateway (§4.5, §7.4.3), and
+[`docs/specification.md`](docs/specification.md) for the gateway's rules stated as
+normative requirements, each tied to the code and test that implement it.
 
 `-policy` is `reject` (Definition 4.5 rule 4 — drop the result), `annotate` (forward
 with a warning and `isError`), or `audit` (log only). Only `reject` actually stops an
@@ -394,7 +396,7 @@ signature. `-max-age` bounds it against the fence timestamp: 10 minutes by defau
 since the relay stamps each fence when it answers. A fence dated more than two minutes
 ahead of the gateway's clock is refused too, so it cannot outlive the bound. Both depend
 on the relay's and the gateway's clocks roughly agreeing; `-max-age 0` turns the age
-check off.
+check off. A fence with no `timestamp` at all is refused, since nothing could bound it.
 
 **Ephemeral keys bound what verification proves.** Fetching the key from the same server
 that produced the fence is *not* circular under the paper's threat model (§2.2) — the
@@ -419,7 +421,7 @@ enforces the floor:
 | no pin, key over plain HTTP from another machine | **refused**: anyone on the path could serve their own key |
 
 Each fence names the key that signed it (`kid`), and the gateway checks it against that
-key alone. So "signed by a key I do not hold" and "forged" are told apart in the audit
+key alone; a relay-scheme fence that names none is refused. So "signed by a key I do not hold" and "forged" are told apart in the audit
 log. A fence naming a key the gateway does not have (a new rotation, or another relay
 replica) makes it fetch the endpoint until that key turns up, up to four times, at most
 once per key every two seconds. Keys the relay has stopped using drop out after a day.

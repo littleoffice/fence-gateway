@@ -247,7 +247,13 @@ func (g *gateway) checkResult(ctx context.Context, tool, identity string, res *m
 		return res, outcomePassedUnverified, why
 	}
 
-	v := &fv.Verifier{Keys: keys, Scheme: g.cfg.scheme, MaxAge: g.cfg.maxAge, MaxClockSkew: fenceClockSkew, RequireNonce: true}
+	v := &fv.Verifier{
+		Keys: keys, Scheme: g.cfg.scheme, MaxAge: g.cfg.maxAge, MaxClockSkew: fenceClockSkew,
+		RequireNonce: true, RequireTimestamp: true,
+		// The paper's reference implementation names no key, so only the
+		// relay's construction can be held to it.
+		RequireKid: g.cfg.scheme == fv.SchemeRelay,
+	}
 
 	var problems []string
 	var unverifiedErrors []*mcp.TextContent

@@ -198,6 +198,17 @@ type Verifier struct {
 	// awareness preamble able to name an authoritative boundary.
 	RequireNonce bool
 
+	// RequireTimestamp rejects fences without a timestamp attribute. MaxAge
+	// and MaxClockSkew can only bound a fence that says when it was made, so
+	// without this a signed fence that carries no timestamp is fresh forever.
+	RequireTimestamp bool
+
+	// RequireKid rejects fences that do not name their key. A fence without
+	// a kid is checked against every key held, so a failure cannot be told
+	// apart from a key the verifier has not fetched yet. The relay always
+	// emits one; the paper's reference implementation does not.
+	RequireKid bool
+
 	// MaxCandidates bounds how many "<sec:fence" openings one input may
 	// contain. Each one is parsed on its own, so text packed with openings
 	// makes Verify do work far out of proportion to its length. Zero means
@@ -442,6 +453,12 @@ func (v *Verifier) verifyParsed(pf *parsedFence) (*Fence, error) {
 	}
 	if v.RequireNonce && f.Nonce == "" {
 		return nil, fmt.Errorf("%w: missing nonce", ErrSchemaViolation)
+	}
+	if _, ok := byName["timestamp"]; v.RequireTimestamp && !ok {
+		return nil, fmt.Errorf("%w: missing timestamp", ErrSchemaViolation)
+	}
+	if v.RequireKid && byName["kid"] == "" {
+		return nil, fmt.Errorf("%w: missing kid", ErrSchemaViolation)
 	}
 
 	if !f.Timestamp.IsZero() {

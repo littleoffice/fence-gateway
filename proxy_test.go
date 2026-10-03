@@ -515,3 +515,31 @@ func TestVerifyImageOnlyResultPassesUnderRequireAll(t *testing.T) {
 		t.Error("an image-only result carries no unfenced text and should pass")
 	}
 }
+
+// Fences under the paper's construction name no key, so a rotation cannot be
+// recognised by kid: any all-failed verification triggers a plain refresh.
+func TestVerifyRecoversFromKeyRotationWithoutKid(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	ks := newKeyServer(t, pub)
+	keys := &fv.EndpointKeys{URL: ks.srv.URL, RetainPrevious: true}
+	if _, err := keys.Refresh(context.Background()); err != nil {
+		t.Fatalf("key fetch: %v", err)
+	}
+	g := &gateway{cfg: config{policy: PolicyReject, scheme: fv.SchemePaperLiteral}, keys: keys, audit: log.New(io.Discard, "", 0)}
+
+	pub2, priv2, _ := ed25519.GenerateKey(rand.Reader)
+	ks.pub = pub2
+	fence, err := fv.Generate(priv2, "two", fv.GenOptions{
+		Type: fv.TypeContent, Rating: fv.RatingUntrusted,
+		Timestamp: time.Now().UTC().Format(time.RFC3339), Scheme: fv.SchemePaperLiteral,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(fence, "kid=") {
+		t.Fatalf("paper-scheme fence names a key: %s", fence)
+	}
+	if txt, isErr := resultText(g.verify(context.Background(), "review", "t", textResult(fence))); isErr {
+		t.Fatalf("gateway did not recover from key rotation: %s", txt)
+	}
+}
