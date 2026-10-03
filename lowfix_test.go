@@ -128,3 +128,41 @@ func TestUpstreamFailureMessageIsFixed(t *testing.T) {
 		t.Error("the failure detail was not logged")
 	}
 }
+
+// The gateway requires every fence to say when it was made, and under the
+// relay's construction to name its key. The paper's construction has no kid,
+// so it is not held to that.
+func TestGatewayRequiresTimestampAndKid(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	now := time.Now().UTC().Format(time.RFC3339)
+	gen := func(o fv.GenOptions) string {
+		t.Helper()
+		o.Type, o.Rating = fv.TypeContent, fv.RatingUntrusted
+		s, err := fv.Generate(priv, "news", o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	cases := []struct {
+		name        string
+		scheme      fv.SchemeMode
+		fence       string
+		wantBlocked bool
+	}{
+		{"relay, complete", fv.SchemeRelay, gen(fv.GenOptions{Timestamp: now, Scheme: fv.SchemeRelay}), false},
+		{"relay, no timestamp", fv.SchemeRelay, gen(fv.GenOptions{Scheme: fv.SchemeRelay}), true},
+		{"relay, no kid", fv.SchemeRelay, gen(fv.GenOptions{Timestamp: now, Scheme: fv.SchemeRelay, OmitKid: true}), true},
+		{"paper, no kid", fv.SchemePaperLiteral, gen(fv.GenOptions{Timestamp: now, Scheme: fv.SchemePaperLiteral}), false},
+		{"paper, no timestamp", fv.SchemePaperLiteral, gen(fv.GenOptions{Scheme: fv.SchemePaperLiteral}), true},
+	}
+	for _, c := range cases {
+		g := testGateway(PolicyReject, pub)
+		g.cfg.scheme = c.scheme
+		g.cfg.maxAge = defaultMaxAge
+		_, blocked := resultText(g.verify(context.Background(), "t", "t", textResult(c.fence)))
+		if blocked != c.wantBlocked {
+			t.Errorf("%s: blocked = %v, want %v", c.name, blocked, c.wantBlocked)
+		}
+	}
+}

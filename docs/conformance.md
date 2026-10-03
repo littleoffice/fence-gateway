@@ -4,7 +4,8 @@ This document maps `fence-gateway` onto the **Security Gateway** the paper
 prescribes — *Prompt Fencing: A Cryptographic Approach to Establishing Security
 Boundaries in Large Language Model Prompts* (Peh, 2025). It is a checklist for
 anyone evaluating the gateway against the paper, and it is honest about the two
-places the implementation deliberately diverges.
+places the implementation deliberately diverges. The gateway's own rules, as
+normative requirements, are in [specification.md](specification.md).
 
 The paper defines the gateway abstractly: a **pre-processing verification
 layer** (§4.5) that "can be implemented in any architecture (e.g. microservice,

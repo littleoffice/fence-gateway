@@ -606,3 +606,54 @@ func TestEscapedBodyNestingStillRefused(t *testing.T) {
 		t.Errorf("want a nested-fence rejection, got %+v", got.Rejections)
 	}
 }
+
+// A fence that says nothing about when it was made cannot be held to MaxAge,
+// so it would stay fresh forever. RequireTimestamp refuses it.
+func TestRequireTimestamp(t *testing.T) {
+	pub, priv := newKP(t)
+	in, err := Generate(priv, "x", GenOptions{Type: TypeContent, Rating: RatingUntrusted, Scheme: SchemeRelay})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(in, "timestamp=") {
+		t.Fatalf("generator emitted a timestamp: %s", in)
+	}
+	v := newVerifier(pub)
+	v.MaxAge = time.Minute
+	if got, _ := v.Verify(in); len(got.Fences) != 1 {
+		t.Fatalf("off: fence without timestamp rejected: %+v", got.Rejections)
+	}
+	v.RequireTimestamp = true
+	got, _ := v.Verify(in)
+	if len(got.Fences) != 0 || len(got.Rejections) != 1 || !strings.Contains(got.Rejections[0].Reason, "missing timestamp") {
+		t.Fatalf("on: want one rejection for the missing timestamp, got %+v", got)
+	}
+}
+
+// A fence that does not name its key is checked against every key held, so a
+// failure cannot say whether the key was missing or the fence forged.
+// RequireKid refuses it.
+func TestRequireKid(t *testing.T) {
+	pub, priv := newKP(t)
+	in, err := Generate(priv, "x", GenOptions{
+		Type: TypeContent, Rating: RatingUntrusted, Timestamp: ts, Scheme: SchemeRelay, OmitKid: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(in, "kid=") {
+		t.Fatalf("generator emitted a kid: %s", in)
+	}
+	v := newVerifier(pub)
+	if got, _ := v.Verify(in); len(got.Fences) != 1 {
+		t.Fatalf("off: fence without kid rejected: %+v", got.Rejections)
+	}
+	v.RequireKid = true
+	got, _ := v.Verify(in)
+	if len(got.Fences) != 0 || len(got.Rejections) != 1 || !strings.Contains(got.Rejections[0].Reason, "missing kid") {
+		t.Fatalf("on: want one rejection for the missing kid, got %+v", got)
+	}
+	if got, _ := v.Verify(genOK(t, priv, "x")); len(got.Fences) != 1 {
+		t.Fatalf("on: fence with the generator's kid rejected: %+v", got.Rejections)
+	}
+}

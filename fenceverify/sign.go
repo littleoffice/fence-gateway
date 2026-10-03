@@ -25,13 +25,16 @@ type GenOptions struct {
 	Rating    string
 	Source    string // omitted from output when empty
 	Nonce     string // generated when empty
-	Timestamp string // RFC 3339; required
+	Timestamp string // RFC 3339; omitted from output when empty, which the relay never does
 	Scheme    SchemeMode
 	// Encoding is "" for an entity-escaped body (the relay's wrapFence) or
 	// EncodingCDATA for a CDATA body (its wrapFenceCDATA).
 	Encoding string
 	// Extra attributes are canonicalised and signed alongside the core set.
 	Extra map[string]string
+	// OmitKid leaves out the kid attribute that SchemeRelay fences otherwise
+	// carry, for testing fences from producers that do not name their key.
+	OmitKid bool
 }
 
 // GenerateNonce returns 128 bits of hex-encoded randomness.
@@ -56,14 +59,21 @@ func Generate(priv ed25519.PrivateKey, content string, o GenOptions) (string, er
 	pairs := []string{
 		`nonce="` + attrEscape(o.Nonce) + `"`,
 		`rating="` + attrEscape(o.Rating) + `"`,
-		`timestamp="` + attrEscape(o.Timestamp) + `"`,
 		`type="` + attrEscape(o.Type) + `"`,
+	}
+	if o.Timestamp != "" {
+		pairs = append(pairs, `timestamp="`+attrEscape(o.Timestamp)+`"`)
 	}
 	if o.Source != "" {
 		pairs = append(pairs, `source="`+attrEscape(o.Source)+`"`)
 	}
 	if o.Encoding != "" {
 		pairs = append(pairs, `encoding="`+attrEscape(o.Encoding)+`"`)
+	}
+	// The relay names its key on every fence; the paper's construction does
+	// not.
+	if _, ok := o.Extra["kid"]; !ok && o.Scheme == SchemeRelay && !o.OmitKid {
+		pairs = append(pairs, `kid="`+Fingerprint(priv.Public().(ed25519.PublicKey))+`"`)
 	}
 	for k, val := range o.Extra {
 		pairs = append(pairs, k+`="`+attrEscape(val)+`"`)
