@@ -42,7 +42,7 @@ ARG SERVER_VERSION=dev
 # and copy the top-level index digest below. Bump deliberately as Go patch
 # releases land; pin-consistency.yml enforces that the Go version in this
 # FROM line matches the `go` directive in go.mod.
-FROM docker.io/golang:1.27.1-trixie@sha256:3b77fc618ec235a1ab412de7737f120dd507c57e8d87de4cbb7994fb94275ed5 AS builder
+FROM docker.io/golang:1.27.2-trixie@sha256:e58d6f83b3416618d8bcac2b3dde1b7f7e3c4a77d25e88637f8bbae81536c48d AS builder
 
 # ARGs do not cross FROM boundaries — re-declare to bring them into scope.
 ARG SOURCE_DATE_EPOCH
