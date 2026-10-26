@@ -70,8 +70,13 @@ jobs:
           # directive's minor (currently 1.27). v2.13.2 is the first release
           # built with Go 1.27, which satisfies `go 1.27.1`; v2.12.2 (built with
           # Go 1.26) would error out. Keep this in step with the go.mod `go`
-          # directive — same version mcp-searxng-relay pins.
-          version: v2.13.2
+          # directive, and with the version mcp-searxng-relay pins.
+          #
+          # A Go patch release can break it too. Go 1.27.2 writes export data
+          # version 5 (go.dev/issue/81188), and v2.13.2's golang.org/x/tools
+          # (v0.49.0) reads only up to 4, so every package failed `typecheck`.
+          # v2.14.0 is the first release on x/tools v0.50.0, which reads 5.
+          version: v2.14.0
           args: --timeout=5m
 
       - name: actionlint

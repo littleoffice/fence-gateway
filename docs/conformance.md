@@ -20,7 +20,7 @@ implementer.
 |---|---|---|
 | Validate all fence signatures **before** the content reaches the LLM | ✅ | `verify()` runs on every tool result before it is returned to the client/model (`proxy.go`) |
 | Maintain and manage cryptographic keys | ✅ | `fenceverify.EndpointKeys` — acquire from the relay's `/fence/public-key`, cache, retain previous across rotation |
-| Reject invalid **or missing** signatures | ◑ | Invalid → replaced with an error result under `-policy reject` (the default). *Missing* → a text block with no fence at all fails by default, except the relay's `No results found.` and its error messages (shortened, labelled unverified). Unsigned text *beside* a verified fence (the relay's 1.0 preamble) is surfaced only with `-require-all-fenced`, which is **off by default** — see [Deliberate divergences](#deliberate-divergences) |
+| Reject invalid **or missing** signatures | ◑ | Invalid → replaced with an error result under `-policy reject` (the default). *Missing* → a text block with no fence at all fails by default, except the relay's `No results found.` and its error messages (shortened, labelled unverified). Unsigned text *beside* a verified 1.1 fence fails by default. Beside a 1.0 fence (whose preamble is unsigned prose) it is surfaced only with `-require-all-fenced`, which is **off by default** — see [Deliberate divergences](#deliberate-divergences) |
 | Log security events for an audit trail | ✅ | Structured audit log: `fence.verified`, `fence.rejected`, `fence.policy.reject`, `fence.key.rotated` — attacker-controlled text goes to the log (read by a human), never back to the model |
 | Handle key rotation and certificate management | ✅ / n/a | Rotation: refetch-and-retry on a verification failure, plus `-pin` and `-tofu`. "Certificate management" is n/a — the relay signs with raw Ed25519 keys, not X.509 certificates, so there are no certs to manage (TLS certs for the HTTP transport are a separate concern) |
 | *(optional)* Strip signature data before the model sees it | ✅ | `-strip-signature` removes the `signature="…"` attribute from verified fences; the nonce is kept because the awareness preamble names it |
@@ -29,8 +29,8 @@ implementer.
 Signature mechanics the paper specifies (§4.6) — Ed25519, alphabetically sorted
 attributes, ISO-8601 timestamps, UTF-8, defined XML escaping — are implemented
 in the `fenceverify` package. The one construction difference between the paper
-and the relay this gateway pairs with is documented in the README's
-["Reconciling the paper with the relay"](../README.md#reconciling-the-paper-with-the-relay).
+and the relay this gateway pairs with is documented in
+["Reconciling the paper with the relay"](design-notes.md#reconciling-the-paper-with-the-relay).
 
 ## Input prompt vs. return path
 
@@ -52,14 +52,17 @@ Two, both documented rather than hidden:
    signatures (§7.4.3), and §4.2 assumes every segment is fenced. The relay,
    however, emits an **unsigned awareness preamble** outside the fence (the text
    that tells the model to treat the fenced content as data). Rejecting all
-   unsigned text by default would block every legitimate response. So the
-   default tolerates unsigned regions beside a verified fence, and
+   unsigned text by default would block every legitimate 1.0 response. So the
+   default tolerates unsigned regions beside a verified 1.0 fence, and
    `-require-all-fenced` surfaces them on demand. A text block with no fence at
    all is not tolerated by default (the relay's no-results reply and its error
    messages aside). The real fix is upstream — wrap the preamble in its own
    `rating="trusted" type="instructions"` fence, which is what the paper
-   prescribes for system instructions anyway. See the README's
-   ["What this found"](../README.md#what-this-found).
+   prescribes for system instructions anyway. The relay does this under
+   `FENCE_PREAMBLE=fenced` (format 1.1), and there the divergence ends:
+   unsigned text beside a 1.1 response fails by default, and
+   `-fence-version 1.1` refuses 1.0. See
+   ["What this found"](design-notes.md#what-this-found).
 
 2. **Certificate management is n/a**, as noted above — the relay uses raw
    Ed25519 keys, so key management is implemented and certificate management has
@@ -67,8 +70,8 @@ Two, both documented rather than hidden:
 
 ## Where the implementation exceeds the paper
 
-Both driven by how the relay actually behaves, and both documented in the
-README's "What this found":
+Both driven by how the relay actually behaves, and both documented in
+["What this found"](design-notes.md#what-this-found):
 
 - **Freshness** — the paper's signatures carry no freshness; a valid fence is
   valid forever. `-max-age` bounds a fence against its timestamp so cached or
