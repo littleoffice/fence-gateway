@@ -54,6 +54,8 @@ substituted relay, or anyone on a plain-HTTP link, does not need to forge a sign
 reach the model; it only has to leave the fence out. Two replies the relay sends unfenced
 are let through: the exact text `No results found.`, and error results, which are
 shortened and labelled as unverified so a failed fetch still reads as a failed fetch.
+The relay's error results are its message and nothing else, so the exception does not
+cover error text sitting beside a verified 1.1 fence: that result is refused.
 `-require-all-fenced` goes further and accepts nothing unsigned, those two included.
 
 ## Response layout

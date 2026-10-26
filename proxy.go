@@ -260,6 +260,8 @@ func (g *gateway) checkResult(ctx context.Context, tool, identity string, res *m
 	// Where each verified fence starts, per text block, for -strip-signature.
 	fenceStarts := make(map[*mcp.TextContent][]int)
 	verified, total, unfenced := 0, 0, 0
+	// The newest fence format among the verified fences, for unverifiedErrors.
+	newest := ""
 
 	// What the relay can send is text, and images for searxng_read_url on an
 	// image. Anything else — an embedded resource, a resource link, audio,
@@ -360,6 +362,9 @@ func (g *gateway) checkResult(ctx context.Context, tool, identity string, res *m
 			if t, ok := g.keys.(interface{ Touch(string) }); ok && f.Extra["kid"] != "" {
 				t.Touch(f.Extra["kid"])
 			}
+			if fv.OlderFormat(newest, f.Version()) {
+				newest = f.Version()
+			}
 			g.hc.metrics.fenceVerified()
 			g.audit.Printf("fence.verified tool=%q identity=%q rating=%s type=%s source=%q nonce=%s bytes=%d",
 				tool, identity, f.Rating, f.Type, f.Source, f.Nonce, len(f.Content))
@@ -410,6 +415,21 @@ func (g *gateway) checkResult(ctx context.Context, tool, identity string, res *m
 		why.add(reasonUnfencedText)
 		problems = append(problems,
 			fmt.Sprintf("%d text block(s) carrying no fence at all", unfenced))
+	}
+
+	// The relay's error results are its message and nothing else: a failed
+	// call never also carries a fence. So unfenced error text beside a
+	// verified 1.1 fence was not written by the relay, and the exception above
+	// does not cover it. Under 1.0 the same rule would hold, but there the
+	// gateway admits unsigned text beside a fence anyway (G4.6), so it is
+	// left to -require-all-fenced and -fence-version 1.1.
+	if len(unverifiedErrors) > 0 && !fv.OlderFormat(newest, fv.FormatFenced) {
+		g.audit.Printf("fence.unfenced_error tool=%q identity=%q blocks=%d format=%s",
+			tool, identity, len(unverifiedErrors), newest)
+		why.add(reasonUnfencedText)
+		problems = append(problems, fmt.Sprintf(
+			"%d unfenced error block(s) beside a format %s fence: the relay's errors carry no fence",
+			len(unverifiedErrors), newest))
 	}
 
 	if len(problems) == 0 {

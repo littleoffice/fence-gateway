@@ -187,8 +187,14 @@ unfenced text gets through; it only has to leave the fence out.
 - the text of an error result. This MUST be shortened to at most 512 bytes and labelled
   as unverified before the model sees it, unless the policy is `audit`.
 
+The second exception MUST NOT be applied when the same result carries a verified fence of
+format 1.1 or later. The producer's error results are its message alone, with no fence
+beside it, so unfenced error text next to a 1.1 fence was not written by the producer.
+Under 1.0 such text is admitted like any unsigned text beside a fence (G4.6).
+
 *`relayNoResults`, `labelUnverifiedError`; `TestVerifyRelayNoResultsPasses`,
-`TestVerifyUnfencedErrorLabelledAndShortened`.*
+`TestVerifyUnfencedErrorLabelledAndShortened`,
+`TestGatewayRefusesUnfencedErrorBesideFencedLayout`.*
 
 **G4.5** In strict mode (`-require-all-fenced`), nothing unsigned is admitted. G4.4 does
 not apply, and non-whitespace text outside verified fences, such as a 1.0 prose preamble,
@@ -291,6 +297,7 @@ The reference implementation's event names:
 | `fence.layout` | a layout or downgrade failure (§3) |
 | `fence.unfenced_block`, `fence.unsigned_text` | unsigned text (G4.3, G4.5) |
 | `fence.unverified_error` | an unfenced error result was admitted (G4.4) |
+| `fence.unfenced_error` | unfenced error text beside a 1.1 fence was refused (G4.4) |
 | `fence.too_large` | the result was over the size limit (G4.2) |
 | `fence.policy.reject` | the policy withheld a result |
 | `fence.verify.nokey`, `fence.key.unavailable` | no usable key (G5.3) |

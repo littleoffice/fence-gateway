@@ -19,6 +19,7 @@ attacker-controlled text, so they go only to the log, never to the model.
 | `fence.layout` | a layout or downgrade failure |
 | `fence.unfenced_block`, `fence.unsigned_text` | unsigned text |
 | `fence.unverified_error` | an unfenced error result was admitted, shortened and labelled |
+| `fence.unfenced_error` | unfenced error text beside a format 1.1 fence was refused |
 | `fence.too_large` | the result was over the size limit |
 | `fence.policy.reject` | the policy withheld a result |
 | `fence.verify.nokey`, `fence.key.unavailable` | no usable key |
