@@ -110,7 +110,7 @@ USER 1001:1001
 # one to run, and over stdio there is nothing to probe. In HTTP mode, probe
 # GET /health from the orchestrator; it needs no credential.
 #
-# Verification behaviour is set by command-line flags (see README) appended
+# Verification behaviour is set by command-line flags (see docs/configuration.md) appended
 # after the entrypoint; deployment by environment variables, e.g.:
 #   docker run --rm -i fence-gateway \
 #     -upstream https://relay.internal:8080/mcp -policy reject -pin <fp>
