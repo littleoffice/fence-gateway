@@ -365,9 +365,11 @@ func (g *gateway) checkResult(ctx context.Context, tool, identity string, res *m
 				tool, identity, f.Rating, f.Type, f.Source, f.Nonce, len(f.Content))
 		}
 		if g.cfg.requireAll && len(r.UnsignedRegions) > 0 {
-			// The awareness preamble lands here. It is unsigned, it is the
+			// The 1.0 awareness preamble lands here. It is unsigned, it is the
 			// text telling the model to distrust the fenced content, and
-			// nothing binds it to the fence it describes.
+			// nothing binds it to the fence it describes. A 1.1 response has
+			// no unsigned preamble, and CheckLayout below fails any unsigned
+			// region beside it whatever the flags.
 			g.audit.Printf("fence.unsigned_text tool=%q identity=%q regions=%d first=%.80q",
 				tool, identity, len(r.UnsignedRegions), r.UnsignedRegions[0])
 			why.add(reasonUnsignedText)

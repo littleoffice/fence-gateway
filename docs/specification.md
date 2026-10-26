@@ -156,6 +156,13 @@ format fails as a downgrade, unless re-reading the endpoint shows the producer w
 back. *`checkFormatDowngrade` in `proxy.go`; `TestGatewayDowngradeAndRollback`,
 `TestGatewayFenceVersion`.*
 
+**G3.7** Under 1.1, nothing but whitespace may sit outside the fences of a text block.
+Unsigned text there is a failure whatever the flags: the producer sends none, and every
+signature still verifies with it there. Responses with no `version` or `1.0` are left to
+§4. *`TestLayoutUnsignedTextBesideFencedPair`,
+`TestLayoutUnsignedTextBesideOlderFormatsOK`,
+`TestGatewayBlocksUnsignedTextBesideFencedLayout`.*
+
 ## 4. Admission
 
 These rules apply to the whole tool result, around the per-fence checks.
@@ -189,9 +196,10 @@ is a failure. *`TestVerifyUnfencedResultFailsUnderRequireAll`,
 `TestVerifyUnfencedBlockBesideValidFenceFailsUnderRequireAll`,
 `TestVerifyUnsignedPreambleFlagged`.*
 
-**G4.6** Without strict mode, unsigned text beside a verified fence is admitted. This is
-what makes format 1.0 work, and it is the known gap that format 1.1 together with
-`-fence-version 1.1` closes. A deployment that can require 1.1 SHOULD.
+**G4.6** Without strict mode, unsigned text beside a verified fence with no `version`, or
+of format 1.0, is admitted. This is what makes format 1.0 work. Under 1.1 it is never
+admitted (G3.7), so `-fence-version 1.1`, which refuses 1.0, closes the gap. A
+deployment that can require 1.1 SHOULD.
 
 ## 5. What the model is shown
 
@@ -302,7 +310,8 @@ authenticate to the tool server:
 
 The gateway refuses to start with several callers until the operator picks one. A call
 whose credential cannot be forwarded or exchanged is refused, not sent under the gateway's
-own credential. Details: the README's *Which credential reaches the relay* and
+own credential. Details:
+[Which credential reaches the relay](configuration.md#which-credential-reaches-the-relay) and
 [token-exchange.md](token-exchange.md). Tests: `config_test.go`,
 `passthrough_test.go`, `exchange_test.go`.
 
