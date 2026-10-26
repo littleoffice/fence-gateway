@@ -51,6 +51,9 @@ func (f *Fence) Version() string { return f.Extra["version"] }
 //     exactly one content fence.
 //   - A trusted fence is only ever that preamble. The relay signs nothing else
 //     as trusted, so any other is not something it produced as a response.
+//   - Under 1.1, nothing but whitespace sits outside the fences: the preamble
+//     that 1.0 sent as prose is a fence of its own. Unsigned text beside them
+//     is not the relay's, and every signature still verifies with it there.
 func CheckLayout(r *Result) []string {
 	if len(r.Fences) == 0 {
 		return nil
@@ -72,6 +75,13 @@ func CheckLayout(r *Result) []string {
 			problems = append(problems, fmt.Sprintf("fence format %q is not one this gateway implements", v))
 			return problems
 		}
+	}
+	// The count only: the regions are attacker-chosen text, and problems can
+	// reach the model under -policy annotate.
+	if !OlderFormat(version, FormatFenced) && len(r.UnsignedRegions) > 0 {
+		problems = append(problems, fmt.Sprintf(
+			"%d unsigned region(s) outside the fences: a format %s response has none",
+			len(r.UnsignedRegions), version))
 	}
 
 	var preambles, content []*Fence

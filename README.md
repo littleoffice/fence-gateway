@@ -378,17 +378,21 @@ another's content, and everything left still verifies. So the gateway also check
 fences fit together. Under 1.1, each content fence must follow a trusted preamble fence
 (`source="mcp-searxng-relay:awareness"`) that names its nonce and shares its key and
 timestamp. All fences in a response must share one format. A trusted fence can only be
-that preamble. And a response in an older format than the relay's key endpoint reports is
-a downgrade, unless a re-read of the endpoint shows the relay was rolled back. Any of
-these is a failure, and the policy applies.
+that preamble. Nothing but whitespace may sit outside the fences of a 1.1 response: the
+relay sends nothing there, so text beside them was added on the way, whatever
+`-require-all-fenced` says. And a response in an older format than the relay's key
+endpoint reports is a downgrade, unless a re-read of the endpoint shows the relay was
+rolled back. Any of these is a failure, and the policy applies.
 
 `-fence-version` sets the oldest format accepted outright. `auto` (the default) follows
-the key endpoint as above, because the relay itself defaults to 1.0. `1.1` requires the
-signed preamble on every response, and is the setting to use once the relay runs with
+the key endpoint as above, because the relay itself defaults to 1.0. `1.1` refuses 1.0
+responses, so every response that reaches the model has a signed preamble and no
+unsigned text beside its fences. It is the setting to use once the relay runs with
 `FENCE_PREAMBLE=fenced`. `1.0` accepts either relay format but refuses fences with no
-version, which only other producers emit. If the relay reports an older format than
-required at startup, the gateway logs `fence.version.mismatch`, since every result
-would then be blocked.
+version, which only other producers emit; a 1.0 response still carries its preamble as
+unsigned prose, which anyone on the gateway→relay path can rewrite. If the relay
+reports an older format than required at startup, the gateway logs
+`fence.version.mismatch`, since every result would then be blocked.
 
 **Signatures carry no freshness.** A valid fence is valid forever. Anything that caches
 or replays tool output can feed stale content into a live session with a perfect
@@ -416,9 +420,16 @@ enforces the floor:
 
 | Key source | Startup |
 |---|---|
-| `-pin` set | starts; the transport does not matter, the key must match the pin |
+| `-pin` set | starts; the key may come over any transport, since it must match the pin |
 | no pin, key over HTTPS or from this machine (`localhost`, `127.0.0.1`, `::1`) | starts, with a `fence.key.unpinned` warning |
 | no pin, key over plain HTTP from another machine | **refused**: anyone on the path could serve their own key |
+
+A pin protects the key, not the unsigned text around a response. Under format 1.0 the
+preamble is unsigned prose, and anyone on the gateway→relay path can rewrite it or add
+to it without touching a signature. With the relay on `FENCE_PREAMBLE=fenced` and the
+gateway on `-fence-version 1.1`, nothing unsigned reaches the model beside a signed
+response. The relay's unfenced replies (above) are a separate matter;
+`-require-all-fenced` refuses those too.
 
 Each fence names the key that signed it (`kid`), and the gateway checks it against that
 key alone; a relay-scheme fence that names none is refused. So "signed by a key I do not hold" and "forged" are told apart in the audit
