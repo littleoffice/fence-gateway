@@ -76,8 +76,8 @@ func CheckLayout(r *Result) []string {
 			return problems
 		}
 	}
-	// The count only: the regions are attacker-chosen text, and problems can
-	// reach the model under -policy annotate.
+	// The count only, never the text: the regions are attacker-chosen, and a
+	// caller of this package may show its problems to a model.
 	if !OlderFormat(version, FormatFenced) && len(r.UnsignedRegions) > 0 {
 		problems = append(problems, fmt.Sprintf(
 			"%d unsigned region(s) outside the fences: a format %s response has none",
