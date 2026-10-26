@@ -97,8 +97,8 @@ faster and may disclose alongside the fix rather than waiting.
   appreciated where the two interact, but the fix belongs there.
 - **The prompt-fencing scheme itself** (arXiv:2511.19727). Limits of what a
   signature over tool output can and cannot prove — replay/freshness, the
-  unsigned preamble, ephemeral-key trust — are discussed honestly in the README
-  under "What this found." Those are properties of the design, not
+  unsigned preamble, ephemeral-key trust — are discussed honestly in
+  ["What this found"](design-notes.md#what-this-found). Those are properties of the design, not
   implementation vulnerabilities, unless the gateway implements a defence
   incorrectly.
 - **The Go standard library and toolchain.** Report stdlib issues to the Go
@@ -109,7 +109,7 @@ faster and may disclose alongside the fix rather than waiting.
 
 The gateway's design already addresses several classes of risk. A reviewer
 evaluating it may find these useful starting points (all are discussed in more
-depth in the README):
+depth in [Verification](verification.md) and [Configuration](configuration.md)):
 
 - **Fail-closed verification.** Under the default `-policy reject`, a tool result
   that carries a `signature=` attribute and fails verification is replaced with

@@ -310,7 +310,8 @@ authenticate to the tool server:
 
 The gateway refuses to start with several callers until the operator picks one. A call
 whose credential cannot be forwarded or exchanged is refused, not sent under the gateway's
-own credential. Details: the README's *Which credential reaches the relay* and
+own credential. Details:
+[Which credential reaches the relay](configuration.md#which-credential-reaches-the-relay) and
 [token-exchange.md](token-exchange.md). Tests: `config_test.go`,
 `passthrough_test.go`, `exchange_test.go`.
 

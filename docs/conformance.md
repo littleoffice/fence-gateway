@@ -29,8 +29,8 @@ implementer.
 Signature mechanics the paper specifies (§4.6) — Ed25519, alphabetically sorted
 attributes, ISO-8601 timestamps, UTF-8, defined XML escaping — are implemented
 in the `fenceverify` package. The one construction difference between the paper
-and the relay this gateway pairs with is documented in the README's
-["Reconciling the paper with the relay"](../README.md#reconciling-the-paper-with-the-relay).
+and the relay this gateway pairs with is documented in
+["Reconciling the paper with the relay"](design-notes.md#reconciling-the-paper-with-the-relay).
 
 ## Input prompt vs. return path
 
@@ -61,8 +61,8 @@ Two, both documented rather than hidden:
    prescribes for system instructions anyway. The relay does this under
    `FENCE_PREAMBLE=fenced` (format 1.1), and there the divergence ends:
    unsigned text beside a 1.1 response fails by default, and
-   `-fence-version 1.1` refuses 1.0. See the README's
-   ["What this found"](../README.md#what-this-found).
+   `-fence-version 1.1` refuses 1.0. See
+   ["What this found"](design-notes.md#what-this-found).
 
 2. **Certificate management is n/a**, as noted above — the relay uses raw
    Ed25519 keys, so key management is implemented and certificate management has
@@ -70,8 +70,8 @@ Two, both documented rather than hidden:
 
 ## Where the implementation exceeds the paper
 
-Both driven by how the relay actually behaves, and both documented in the
-README's "What this found":
+Both driven by how the relay actually behaves, and both documented in
+["What this found"](design-notes.md#what-this-found):
 
 - **Freshness** — the paper's signatures carry no freshness; a valid fence is
   valid forever. `-max-age` bounds a fence against its timestamp so cached or

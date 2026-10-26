@@ -196,8 +196,9 @@ trustworthy:
   `fence.go`, but this has not been through the kind of external security audit
   the relay had. Treat it accordingly.
 - **The trust the signatures buy is bounded by key acquisition.** This is a
-  property of the design, documented at length in the README's "Ephemeral keys
-  bound what verification proves" section, not a build-pipeline gap — but it is
+  property of the design, documented at length in
+  ["Ephemeral keys bound what verification proves"](design-notes.md#ephemeral-keys-bound-what-verification-proves),
+  not a build-pipeline gap — but it is
   the single biggest limiter on what running this actually gets you, and a
   reviewer should read that section before deploying with `-pin` unset.
 - **Single-maintainer project.** See [Development process](#development-process)
