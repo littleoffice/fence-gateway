@@ -167,9 +167,10 @@ genuine fence. The signed preamble tells the model to treat them as data; under 
 1.1 the gateway guarantees that preamble is present and intact, not that the model obeys
 it.
 
-**How the code was written.** AI-assisted development was used extensively in
-implementing the code. One maintainer directs the work, reviews every change before it
-is merged, and builds and tests every release. Details:
+**How the code was written.** The project is entirely AI-generated: an AI assistant
+(Claude) wrote the code, the documentation, and the build and deployment files. One
+maintainer directs the work, decides which changes are merged, and builds and tests
+every release. What that means for a reviewer is in the
 [development process](docs/supply-chain.md#development-process).
 
 Report vulnerabilities privately: [docs/SECURITY.md](docs/SECURITY.md).
