@@ -183,6 +183,10 @@ at startup. A CA rotates rarely: add the new CA to the bundle and restart the
 gateway before certificates from it are issued, and remove the old one (with
 another restart) once nothing uses it.
 
+If `-upstream` names the relay by IP address rather than DNS name, its
+certificate must carry that IP as a subject alternative name. Prefer the
+service's DNS name: cluster IPs change.
+
 With cert-manager and a CA Issuer, the relay's certificate looks like this;
 mount the `relay-tls` Secret into the relay (`tls.crt`, `tls.key`) and its
 `ca.crt` into the gateway as the `-upstream-ca` bundle:
@@ -203,12 +207,20 @@ spec:
     name: <your CA issuer>
 ```
 
+The Secret's `ca.crt` holds only the issuer's *current* CA. When the CA itself
+is rotated, the gateway needs the old and new CA together until every relay
+certificate from the old one has been replaced: build that bundle yourself, or
+let [trust-manager](https://cert-manager.io/docs/trust/trust-manager/) maintain
+it as a ConfigMap, and restart the gateway when it changes.
+
 `-insecure-upstream` allows plain HTTP to another host anyway, for a network
-protected some other way (a service mesh that adds mTLS between the pods). The
-gateway then logs `upstream.plaintext` at startup. It has no effect in
-`UPSTREAM_MCP_AUTH_MODE=passthrough`, where the credential crossing that hop is
-the caller's own and also works at the gateway: there the upstream must be
-HTTPS.
+protected some other way: behind a service mesh that adds mTLS between the pods
+(Istio, Linkerd), the gateway speaks plain HTTP to its own sidecar. The gateway
+then logs `upstream.plaintext` at startup, and in
+`UPSTREAM_MCP_AUTH_MODE=passthrough` the warning adds that the credential on
+that hop is each caller's own token, which also works at the gateway. The same
+flag covers an explicit `UPSTREAM_METRICS_URL`, which carries the relay's
+metrics token and is otherwise held to the same rule.
 
 ## Kubernetes / searxng-helm
 

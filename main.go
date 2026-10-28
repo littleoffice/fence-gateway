@@ -101,7 +101,7 @@ func main() {
 		stripSig = flag.Bool("strip-signature", false, "remove signature attributes from verified fences before forwarding")
 		fenceVer = flag.String("fence-version", "auto", "oldest fence format to accept: auto (follow the relay's key endpoint), 1.0, or 1.1 (require the signed preamble)")
 		reqAll   = flag.Bool("require-all-fenced", false, "treat any unsigned text in a tool result as a failure, including the relay's unfenced no-results reply and error messages")
-		insecure = flag.Bool("insecure-upstream", false, "allow a plain-HTTP -upstream to another host (not in passthrough mode); only on a network protected some other way")
+		insecure = flag.Bool("insecure-upstream", false, "allow a plain-HTTP -upstream (and UPSTREAM_METRICS_URL) to another host; only on a network protected some other way, such as a service mesh with mTLS")
 		upCA     = flag.String("upstream-ca", os.Getenv("UPSTREAM_CA_FILE"), "PEM bundle of the CAs that issue the relay's certificate, trusted instead of the system roots (env: UPSTREAM_CA_FILE)")
 		version  = flag.Bool("version", false, "print version and exit")
 	)
@@ -169,6 +169,11 @@ func main() {
 	plainWarning, err := checkUpstreamTransport(*upstream, *insecure, ua)
 	if err != nil {
 		fatal("%v", err)
+	}
+	if hc.relayMetricsURL != "" {
+		if err := checkMetricsTransport(hc.relayMetricsURL, *insecure); err != nil {
+			fatal("%v", err)
+		}
 	}
 	var ca *http.Transport
 	if f := strings.TrimSpace(*upCA); f != "" {

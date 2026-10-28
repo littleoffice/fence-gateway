@@ -135,7 +135,8 @@ depth in [Verification](verification.md) and [Configuration](configuration.md)):
   tighten the guarantees to their threat model. Without a pin, the gateway
   refuses to fetch the relay's key over plain HTTP from another machine.
 - **TLS to the relay by default.** A plain-HTTP upstream on another host is
-  refused unless `-insecure-upstream` is set, and always in passthrough mode.
+  refused unless `-insecure-upstream` is set for a network protected some
+  other way (a service mesh with mTLS).
   `-upstream-ca` trusts a private CA. See
   [deployment.md](deployment.md#tls-to-the-relay).
 

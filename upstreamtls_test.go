@@ -20,8 +20,7 @@ import (
 )
 
 // Plain HTTP to another host carries the relay credential and every tool
-// result in cleartext, so it needs -insecure-upstream, and is refused outright
-// when the credential is the caller's own.
+// result in cleartext, so it needs -insecure-upstream, in every auth mode.
 func TestCheckUpstreamTransport(t *testing.T) {
 	static := upstreamAuth{mode: upstreamAuthStatic}
 	pass := upstreamAuth{mode: upstreamAuthPassthrough}
@@ -43,8 +42,9 @@ func TestCheckUpstreamTransport(t *testing.T) {
 		{"plain HTTP to a cluster IP", "http://10.0.0.7:8080/mcp", false, static, "plain HTTP to another host", false},
 		{"plain HTTP, allowed on purpose", "http://relay.internal:8080/mcp", true, static, "", true},
 		{"plain HTTP, exchange, allowed on purpose", "http://relay.internal:8080/mcp", true, exch, "", true},
-		{"plain HTTP, passthrough", "http://relay.internal:8080/mcp", false, pass, "passthrough", false},
-		{"plain HTTP, passthrough, flag does not apply", "http://relay.internal:8080/mcp", true, pass, "passthrough", false},
+		{"plain HTTP, passthrough", "http://relay.internal:8080/mcp", false, pass, "plain HTTP to another host", false},
+		// Behind a service mesh the gateway speaks plain HTTP to its sidecar.
+		{"plain HTTP, passthrough, allowed on purpose", "http://relay.internal:8080/mcp", true, pass, "", true},
 		{"not a URL", "relay.internal:8080", false, static, "", false},
 		{"other scheme", "ftp://relay.internal/mcp", false, static, "scheme", false},
 	}
@@ -70,6 +70,34 @@ func TestCheckUpstreamTransport(t *testing.T) {
 				t.Errorf("warning = %q, want warning %v", warn, c.wantWarn)
 			}
 		})
+	}
+}
+
+func TestCheckUpstreamTransportPassthroughWarning(t *testing.T) {
+	warn, err := checkUpstreamTransport("http://relay.internal:8080/mcp", true, upstreamAuth{mode: upstreamAuthPassthrough})
+	if err != nil || !strings.Contains(warn, "caller's own token") {
+		t.Errorf("warning = %q, %v; want one naming the callers' tokens", warn, err)
+	}
+}
+
+// An explicit UPSTREAM_METRICS_URL carries the relay's metrics token, so the
+// same rule applies to it.
+func TestCheckMetricsTransport(t *testing.T) {
+	cases := []struct {
+		url      string
+		insecure bool
+		wantErr  bool
+	}{
+		{"https://relay.internal:8080/metrics", false, false},
+		{"http://127.0.0.1:8080/metrics", false, false},
+		{"http://relay.internal:8080/metrics", false, true},
+		{"http://relay.internal:8080/metrics", true, false},
+		{"ftp://relay.internal/metrics", true, true},
+	}
+	for _, c := range cases {
+		if err := checkMetricsTransport(c.url, c.insecure); (err != nil) != c.wantErr {
+			t.Errorf("checkMetricsTransport(%q, %t) = %v, want error %t", c.url, c.insecure, err, c.wantErr)
+		}
 	}
 }
 

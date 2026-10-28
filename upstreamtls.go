@@ -18,34 +18,59 @@ import (
 // Every upstream request carries a bearer credential, and every tool result
 // comes back over this hop. Over plain HTTP to another machine anyone on the
 // network path reads the credential and can rewrite what the relay sent, so
-// that is refused unless -insecure-upstream says the network is trusted (a
-// service mesh that adds mTLS, say). In passthrough mode the credential is the
-// caller's own, which also works at the gateway, so plain HTTP is refused even
-// then. Loopback never leaves the machine and is always allowed.
+// that is refused unless -insecure-upstream says the network is protected some
+// other way: a service mesh whose sidecars add mTLS, where the gateway itself
+// must speak plain HTTP. In passthrough mode the credential is the caller's
+// own, which also works at the gateway, and the warning says so. Loopback
+// never leaves the machine and is always allowed.
 func checkUpstreamTransport(upstream string, insecure bool, ua upstreamAuth) (warning string, err error) {
-	u, err := url.Parse(upstream)
-	if err != nil || u.Host == "" {
-		return "", fmt.Errorf("-upstream %q is not an absolute URL", upstream)
+	plain, err := plainRemote("-upstream", upstream)
+	if err != nil || !plain {
+		return "", err
 	}
-	switch {
-	case u.Scheme == "https", u.Scheme == "http" && isLoopback(u.Hostname()):
-		return "", nil
-	case u.Scheme != "http":
-		return "", fmt.Errorf("-upstream %q: scheme %q is not http or https", upstream, u.Scheme)
-	case ua.passthrough():
-		return "", fmt.Errorf("-upstream %q is plain HTTP to another host, and UPSTREAM_MCP_AUTH_MODE=passthrough "+
-			"sends callers' own tokens over it: serve the relay over HTTPS (MCP_TLS_CERT/MCP_TLS_KEY or "+
-			"MCP_TLS_ACME_DOMAINS on the relay) and use -upstream https://…; -insecure-upstream does not "+
-			"apply in passthrough mode", upstream)
-	case !insecure:
+	if !insecure {
 		return "", fmt.Errorf("-upstream %q is plain HTTP to another host: the relay credential and every "+
 			"tool result would cross the network in cleartext. Serve the relay over HTTPS and use "+
 			"-upstream https://… (add -upstream-ca for a private CA), or set -insecure-upstream when "+
 			"the network itself is protected (a service mesh with mTLS)", upstream)
 	}
-	return "the relay is reached over plain HTTP (-insecure-upstream): its credential and every tool " +
+	warning = "the relay is reached over plain HTTP (-insecure-upstream): its credential and every tool " +
 		"result cross the network in cleartext, so this is safe only on a network that is protected " +
-		"some other way", nil
+		"some other way"
+	if ua.passthrough() {
+		warning += ". In passthrough mode that credential is each caller's own token, which also " +
+			"works at the gateway"
+	}
+	return warning, nil
+}
+
+// checkMetricsTransport applies the same rule to an explicit
+// UPSTREAM_METRICS_URL, which carries the relay's metrics token. The default
+// is derived from -upstream and was checked with it.
+func checkMetricsTransport(metricsURL string, insecure bool) error {
+	plain, err := plainRemote("UPSTREAM_METRICS_URL", metricsURL)
+	if err != nil || !plain || insecure {
+		return err
+	}
+	return fmt.Errorf("UPSTREAM_METRICS_URL %q is plain HTTP to another host: the relay's metrics token "+
+		"would cross the network in cleartext. Use https://, or set -insecure-upstream when the "+
+		"network itself is protected", metricsURL)
+}
+
+// plainRemote reports whether raw is plain HTTP to a host other than this
+// machine. HTTPS and loopback are not; any other scheme is an error.
+func plainRemote(name, raw string) (bool, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false, fmt.Errorf("%s %q is not an absolute URL", name, raw)
+	}
+	switch {
+	case u.Scheme == "https", u.Scheme == "http" && isLoopback(u.Hostname()):
+		return false, nil
+	case u.Scheme != "http":
+		return false, fmt.Errorf("%s %q: scheme %q is not http or https", name, raw, u.Scheme)
+	}
+	return true, nil
 }
 
 // newUpstreamCA builds the transport for the relay when -upstream-ca is set:
