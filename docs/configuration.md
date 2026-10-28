@@ -28,6 +28,8 @@ entrypoint when running the container.
 | `-require-all-fenced` | off | Treat any unsigned text in a tool result as a failure, including the relay's unfenced no-results reply and error messages. |
 | `-strip-signature` | off | Remove `signature` attributes from verified fences before forwarding. The nonce is kept, since the preamble names it. |
 | `-paper-scheme` | off | Verify with the paper's literal `Ed25519(SHA-256(C ‖ M))` construction instead of the relay's. See [Design notes](design-notes.md#signature-construction). |
+| `-upstream-ca` | `$UPSTREAM_CA_FILE` | PEM bundle of the CAs that issue the relay's certificate, trusted for the relay's host instead of the system roots. Read at startup. See [TLS to the relay](deployment.md#tls-to-the-relay). |
+| `-insecure-upstream` | off | Allow a plain-HTTP `-upstream` (and `UPSTREAM_METRICS_URL`) on another host, for a network protected some other way such as a service mesh with mTLS. Without it, only HTTPS or loopback is accepted. |
 | `-token` | `$UPSTREAM_MCP_TOKEN` | The gateway's own credential for the relay. Prefer the environment variable: on the command line it shows in the process list and shell history, and the gateway warns. |
 | `-version` | | Print the version and exit. |
 

@@ -101,6 +101,8 @@ func main() {
 		stripSig = flag.Bool("strip-signature", false, "remove signature attributes from verified fences before forwarding")
 		fenceVer = flag.String("fence-version", "auto", "oldest fence format to accept: auto (follow the relay's key endpoint), 1.0, or 1.1 (require the signed preamble)")
 		reqAll   = flag.Bool("require-all-fenced", false, "treat any unsigned text in a tool result as a failure, including the relay's unfenced no-results reply and error messages")
+		insecure = flag.Bool("insecure-upstream", false, "allow a plain-HTTP -upstream (and UPSTREAM_METRICS_URL) to another host; only on a network protected some other way, such as a service mesh with mTLS")
+		upCA     = flag.String("upstream-ca", os.Getenv("UPSTREAM_CA_FILE"), "PEM bundle of the CAs that issue the relay's certificate, trusted instead of the system roots (env: UPSTREAM_CA_FILE)")
 		version  = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -164,6 +166,21 @@ func main() {
 	if err != nil {
 		fatal("%v", err)
 	}
+	plainWarning, err := checkUpstreamTransport(*upstream, *insecure, ua)
+	if err != nil {
+		fatal("%v", err)
+	}
+	if hc.relayMetricsURL != "" {
+		if err := checkMetricsTransport(hc.relayMetricsURL, *insecure); err != nil {
+			fatal("%v", err)
+		}
+	}
+	var ca *http.Transport
+	if f := strings.TrimSpace(*upCA); f != "" {
+		if ca, err = newUpstreamCA(f); err != nil {
+			fatal("-upstream-ca %q: %v", f, err)
+		}
+	}
 
 	ku := *keyURL
 	if ku == "" {
@@ -178,8 +195,12 @@ func main() {
 	if keyWarning != "" {
 		audit.Printf("fence.key.unpinned url=%q hint=%q", ku, keyWarning)
 	}
+	if plainWarning != "" {
+		audit.Printf("upstream.plaintext endpoint=%q hint=%q", *upstream, plainWarning)
+	}
 	keys := &fv.EndpointKeys{
 		URL:               ku,
+		Client:            &http.Client{Timeout: 10 * time.Second, Transport: relayTransport(ca, *upstream, ku)},
 		PinnedFingerprint: cfg.pin,
 		TOFU:              cfg.tofu,
 		RetainPrevious:    true,
@@ -252,9 +273,10 @@ func main() {
 			mu = upstreamPath(*upstream, "/metrics")
 		}
 		hc.relayMetrics = newRelayMetrics(mu, hc.relayMetricsToken, audit, hc.metrics)
+		hc.relayMetrics.client.Transport = relayTransport(ca, *upstream, mu)
 	}
 
-	g := &gateway{cfg: cfg, hc: hc, ua: ua, keys: keys, audit: audit, exchanger: exchanger}
+	g := &gateway{cfg: cfg, hc: hc, ua: ua, keys: keys, audit: audit, exchanger: exchanger, upCA: ca}
 
 	// Say, once, how callers reach the relay — and warn when several of them
 	// reach it as one. In static mode every downstream identity arrives at the
@@ -374,7 +396,7 @@ func (g *gateway) upstreamTransport() *mcp.StreamableClientTransport {
 				token: g.ua.token,
 				own:   g.ownToken(),
 				host:  upstreamHost(g.cfg.upstream),
-				base:  http.DefaultTransport,
+				base:  upstreamRoundTripper(g.upCA),
 			},
 		},
 		DisableStandaloneSSE: true,

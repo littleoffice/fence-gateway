@@ -28,7 +28,7 @@ go build -o fence-gateway .
 
 # In-line gateway over stdio: point your MCP client at this instead of the relay
 UPSTREAM_MCP_TOKEN="$RELAY_TOKEN" ./fence-gateway \
-  -upstream http://relay.internal:8080/mcp \
+  -upstream https://relay.internal:8080/mcp \
   -pin 5fb07c6222c503de \
   -policy reject
 ```

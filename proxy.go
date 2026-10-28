@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -31,7 +32,10 @@ type gateway struct {
 	// exchanger trades callers' tokens for relay tokens (exchange mode);
 	// nil otherwise.
 	exchanger *tokenExchanger
-	up        *upstreamSession
+	// upCA is the transport trusting the -upstream-ca bundle for the relay's
+	// certificate; nil means the system roots.
+	upCA *http.Transport
+	up   *upstreamSession
 	// pool, when set, gives each downstream conversation a relay session of
 	// its own; nil means every call uses up.
 	pool *sessionPool
