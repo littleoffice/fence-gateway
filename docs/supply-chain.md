@@ -151,7 +151,9 @@ that the result is auditable and reproducible:
 
 ## Continuous integration
 
-Every push and pull request runs [`ci.yml`](../.github/workflows/ci.yml):
+Every push and pull request runs [`ci.yml`](../.github/workflows/ci.yml), and
+so does every tagged release, as a job the release job waits on: a tag whose
+revision fails any of these checks builds and publishes nothing.
 
 - **`golangci-lint`** over the Go code (pinned linter version) and **`actionlint`**
   over the workflow files themselves (fetched with `go run pkg@version`, verified
