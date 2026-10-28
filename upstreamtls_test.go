@@ -149,14 +149,9 @@ func tlsServer(t *testing.T, ca *testCA) *httptest.Server {
 	return srv
 }
 
-// writeFile writes data and moves the modification time forward, so a
-// rewrite within the filesystem's timestamp resolution still reads as a change.
-func writeFile(t *testing.T, path string, data []byte, mod time.Time) {
+func writeFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(path, mod, mod); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -170,21 +165,19 @@ func getVia(rt http.RoundTripper, url string) error {
 	return nil
 }
 
-// -upstream-ca trusts its bundle instead of the system roots, and picks up a
-// CA rotated in place without a restart, as a cert-manager CA Issuer's Secret
-// is updated in the pod.
-func TestUpstreamCAReload(t *testing.T) {
+// -upstream-ca trusts its bundle instead of the system roots, and a bundle
+// may hold several CAs, as during a rotation.
+func TestUpstreamCA(t *testing.T) {
 	oldCA, newCA := newTestCA(t, "old"), newTestCA(t, "new")
 	oldSrv, newSrv := tlsServer(t, oldCA), tlsServer(t, newCA)
+	dir := t.TempDir()
 
-	path := filepath.Join(t.TempDir(), "ca.crt")
-	start := time.Now().Add(-time.Minute)
-	writeFile(t, path, oldCA.pem, start)
-	ca, err := newUpstreamCA(path)
+	one := filepath.Join(dir, "one.crt")
+	writeFile(t, one, oldCA.pem)
+	ca, err := newUpstreamCA(one)
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	if err := getVia(ca, oldSrv.URL); err != nil {
 		t.Fatalf("relay signed by the bundle's CA: %v", err)
 	}
@@ -192,26 +185,15 @@ func TestUpstreamCAReload(t *testing.T) {
 		t.Fatal("relay signed by a CA outside the bundle was accepted")
 	}
 
-	// Rotation overlap: both CAs in the bundle.
-	writeFile(t, path, append(append([]byte{}, oldCA.pem...), newCA.pem...), start.Add(time.Second))
-	if err := getVia(ca, oldSrv.URL); err != nil {
-		t.Fatalf("old CA during overlap: %v", err)
+	both := filepath.Join(dir, "both.crt")
+	writeFile(t, both, append(append([]byte{}, oldCA.pem...), newCA.pem...))
+	if ca, err = newUpstreamCA(both); err != nil {
+		t.Fatal(err)
 	}
-	if err := getVia(ca, newSrv.URL); err != nil {
-		t.Fatalf("new CA during overlap: %v", err)
-	}
-
-	// A bundle caught mid-write keeps the last good one.
-	writeFile(t, path, []byte("-----BEGIN CERT"), start.Add(2*time.Second))
-	if err := getVia(ca, newSrv.URL); err != nil {
-		t.Fatalf("a broken bundle dropped the last good one: %v", err)
-	}
-
-	// Old CA retired.
-	writeFile(t, path, newCA.pem, start.Add(3*time.Second))
-	ca.transport().CloseIdleConnections()
-	if err := getVia(ca, oldSrv.URL); err == nil {
-		t.Fatal("relay signed by the retired CA was still accepted")
+	for _, srv := range []*httptest.Server{oldSrv, newSrv} {
+		if err := getVia(ca, srv.URL); err != nil {
+			t.Fatalf("two-CA bundle: %v", err)
+		}
 	}
 }
 
@@ -221,7 +203,7 @@ func TestNewUpstreamCARejectsBadBundle(t *testing.T) {
 		t.Error("a missing bundle was accepted")
 	}
 	empty := filepath.Join(dir, "empty.crt")
-	writeFile(t, empty, []byte("not a certificate\n"), time.Now())
+	writeFile(t, empty, []byte("not a certificate\n"))
 	if _, err := newUpstreamCA(empty); err == nil || !strings.Contains(err.Error(), "no PEM certificates") {
 		t.Errorf("err = %v, want a no-certificates error", err)
 	}
@@ -230,7 +212,7 @@ func TestNewUpstreamCARejectsBadBundle(t *testing.T) {
 // The bundle applies to the relay's own endpoints only: an explicit -key-url
 // or UPSTREAM_METRICS_URL on another host keeps the system roots.
 func TestRelayTransport(t *testing.T) {
-	ca := &upstreamCA{}
+	ca := &http.Transport{}
 	const up = "https://relay.internal:8443/mcp"
 	if relayTransport(ca, up, "https://relay.internal:8443/fence/public-key") != http.RoundTripper(ca) {
 		t.Error("the relay's key endpoint does not use the bundle")
@@ -240,54 +222,5 @@ func TestRelayTransport(t *testing.T) {
 	}
 	if relayTransport(nil, up, "https://relay.internal:8443/metrics") != http.DefaultTransport {
 		t.Error("no bundle should mean the system roots")
-	}
-}
-
-// MCP_TLS_CERT/MCP_TLS_KEY are served through a reloader: a certificate
-// renewed in place is served on the next handshake, and a half-written pair
-// keeps the last good one.
-func TestCertReloader(t *testing.T) {
-	ca := newTestCA(t, "issuer")
-	dir := t.TempDir()
-	certFile, keyFile := filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key")
-	start := time.Now().Add(-time.Minute)
-
-	c1, k1 := ca.leaf(t)
-	writeFile(t, certFile, c1, start)
-	writeFile(t, keyFile, k1, start)
-	r, err := newCertReloader(certFile, keyFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := r.getCertificate(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Renewed: new cert and key.
-	c2, k2 := ca.leaf(t)
-	writeFile(t, certFile, c2, start.Add(time.Second))
-	writeFile(t, keyFile, k2, start.Add(time.Second))
-	second, err := r.getCertificate(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(second.Certificate[0]) == string(first.Certificate[0]) {
-		t.Fatal("the renewed certificate was not picked up")
-	}
-
-	// Mid-rotation: the cert is rewritten, the key is not yet.
-	c3, _ := ca.leaf(t)
-	writeFile(t, certFile, c3, start.Add(2*time.Second))
-	third, err := r.getCertificate(nil)
-	if err != nil {
-		t.Fatalf("a mismatched pair failed the handshake: %v", err)
-	}
-	if string(third.Certificate[0]) != string(second.Certificate[0]) {
-		t.Error("a mismatched pair replaced the last good certificate")
-	}
-
-	if _, err := newCertReloader(filepath.Join(dir, "missing.crt"), keyFile); err == nil {
-		t.Error("a missing certificate was accepted at startup")
 	}
 }

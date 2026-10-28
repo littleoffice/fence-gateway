@@ -102,7 +102,7 @@ func main() {
 		fenceVer = flag.String("fence-version", "auto", "oldest fence format to accept: auto (follow the relay's key endpoint), 1.0, or 1.1 (require the signed preamble)")
 		reqAll   = flag.Bool("require-all-fenced", false, "treat any unsigned text in a tool result as a failure, including the relay's unfenced no-results reply and error messages")
 		insecure = flag.Bool("insecure-upstream", false, "allow a plain-HTTP -upstream to another host (not in passthrough mode); only on a network protected some other way")
-		upCA     = flag.String("upstream-ca", os.Getenv("UPSTREAM_CA_FILE"), "PEM bundle of the CAs that issue the relay's certificate, trusted instead of the system roots; re-read when the file changes (env: UPSTREAM_CA_FILE)")
+		upCA     = flag.String("upstream-ca", os.Getenv("UPSTREAM_CA_FILE"), "PEM bundle of the CAs that issue the relay's certificate, trusted instead of the system roots (env: UPSTREAM_CA_FILE)")
 		version  = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -170,7 +170,7 @@ func main() {
 	if err != nil {
 		fatal("%v", err)
 	}
-	var ca *upstreamCA
+	var ca *http.Transport
 	if f := strings.TrimSpace(*upCA); f != "" {
 		if ca, err = newUpstreamCA(f); err != nil {
 			fatal("-upstream-ca %q: %v", f, err)

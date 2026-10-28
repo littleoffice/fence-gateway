@@ -136,8 +136,7 @@ depth in [Verification](verification.md) and [Configuration](configuration.md)):
   refuses to fetch the relay's key over plain HTTP from another machine.
 - **TLS to the relay by default.** A plain-HTTP upstream on another host is
   refused unless `-insecure-upstream` is set, and always in passthrough mode.
-  `-upstream-ca` trusts a private CA, and certificates on both sides are
-  re-read when they change. See
+  `-upstream-ca` trusts a private CA. See
   [deployment.md](deployment.md#tls-to-the-relay).
 
 Pointing at these is not a claim that the project is free of vulnerabilities —

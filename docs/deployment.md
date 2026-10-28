@@ -120,9 +120,9 @@ openssl x509 -req -in relay.csr -CA relay-ca.crt -CAkey relay-ca.key -days 825 \
 chmod 600 relay-ca.key relay.key
 ```
 
-Keep `relay-ca.key` off the host once the certificate is issued. Both sides
-re-read their files when they change, so replacing `relay.crt`/`relay.key` or
-`relay-ca.crt` in place needs no restart. See [TLS to the relay](#tls-to-the-relay).
+Keep `relay-ca.key` off the host once the certificate is issued. The relay
+re-reads `relay.crt`/`relay.key` when they change; the gateway reads
+`relay-ca.crt` at startup. See [TLS to the relay](#tls-to-the-relay).
 
 `envs/.fence-gateway.env`, for a single user (`static` mode):
 
@@ -175,11 +175,13 @@ Three ways to meet it:
   serves `MCP_TLS_CERT`/`MCP_TLS_KEY`; the gateway trusts their issuer with
   `-upstream-ca`, or the system roots if a public CA signed them.
 
-Rotation needs no restart on either side. The relay re-reads `MCP_TLS_CERT`
-and `MCP_TLS_KEY` when they change, the gateway does the same for its own
-`MCP_TLS_CERT`/`MCP_TLS_KEY` and for the `-upstream-ca` bundle, so a
-cert-manager Secret mounted as a volume (not through `subPath`, which never
-updates) is picked up as cert-manager renews it.
+Renewing the relay's certificate needs no restart: the relay re-reads
+`MCP_TLS_CERT` and `MCP_TLS_KEY` when they change, so a cert-manager Secret
+mounted as a volume (not through `subPath`, which never updates) is picked up
+as cert-manager renews it. The gateway reads the `-upstream-ca` bundle once,
+at startup. A CA rotates rarely: add the new CA to the bundle and restart the
+gateway before certificates from it are issued, and remove the old one (with
+another restart) once nothing uses it.
 
 With cert-manager and a CA Issuer, the relay's certificate looks like this;
 mount the `relay-tls` Secret into the relay (`tls.crt`, `tls.key`) and its
