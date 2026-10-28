@@ -28,6 +28,8 @@ entrypoint when running the container.
 | `-require-all-fenced` | off | Treat any unsigned text in a tool result as a failure, including the relay's unfenced no-results reply and error messages. |
 | `-strip-signature` | off | Remove `signature` attributes from verified fences before forwarding. The nonce is kept, since the preamble names it. |
 | `-paper-scheme` | off | Verify with the paper's literal `Ed25519(SHA-256(C ‖ M))` construction instead of the relay's. See [Design notes](design-notes.md#signature-construction). |
+| `-upstream-ca` | `$UPSTREAM_CA_FILE` | PEM bundle of the CAs that issue the relay's certificate, trusted for the relay's host instead of the system roots. Re-read when the file changes. See [TLS to the relay](deployment.md#tls-to-the-relay). |
+| `-insecure-upstream` | off | Allow a plain-HTTP `-upstream` on another host. Refused in `passthrough` mode. Without it, only HTTPS or loopback is accepted. |
 | `-token` | `$UPSTREAM_MCP_TOKEN` | The gateway's own credential for the relay. Prefer the environment variable: on the command line it shows in the process list and shell history, and the gateway warns. |
 | `-version` | | Print the version and exit. |
 
@@ -45,7 +47,7 @@ are on by default.
 | `MCP_AUTH_TOKEN` | Single bearer token clients must present to the gateway. |
 | `MCP_AUTH_TOKENS` | Comma-separated `identity:token` pairs (a small fleet). |
 | `MCP_AUTH_TOKEN_FILE` | File of tokens, one `identity:token` per line (`#` comments allowed). |
-| `MCP_TLS_CERT` / `MCP_TLS_KEY` | Serve HTTPS directly (both or neither). Omit to terminate TLS at a reverse proxy. |
+| `MCP_TLS_CERT` / `MCP_TLS_KEY` | Serve HTTPS directly (both or neither). Re-read when either file changes, so a renewed certificate (cert-manager) needs no restart. Omit to terminate TLS at a reverse proxy. |
 | `MCP_STATELESS` | No session-ID issuance, so replicas need no sticky routing. Must match the relay's setting — see [below](#stateless-mode-and-upstream-sessions). |
 | `MCP_TRUST_FORWARDED_HEADERS` | Honour `X-Forwarded-For` for the login throttle, and `X-Forwarded-Proto`/`-Host` when building the OAuth metadata URL. Off by default. |
 

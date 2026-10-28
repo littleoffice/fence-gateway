@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
@@ -208,11 +209,23 @@ func (g *gateway) runHTTP(ctx context.Context, server *mcp.Server, hc httpConfig
 	g.audit.Printf("http.listen addr=%q tls=%t auth_identities=%d oauth=%q",
 		srv.Addr, hc.tlsEnabled(), len(hc.authTokens), hc.oauth.describe())
 
+	if hc.tlsEnabled() {
+		// Served through a reloader, so a certificate renewed in place
+		// (cert-manager rotating its Secret) needs no restart. Loading it
+		// here makes a bad pair fail startup.
+		certs, err := newCertReloader(hc.tlsCert, hc.tlsKey)
+		if err != nil {
+			return fmt.Errorf("MCP_TLS_CERT/MCP_TLS_KEY: %w", err)
+		}
+		srv.TLSConfig = &tls.Config{GetCertificate: certs.getCertificate, MinVersion: tls.VersionTLS12}
+	}
+
 	errc := make(chan error, 1)
 	go func() {
 		var err error
 		if hc.tlsEnabled() {
-			err = srv.ListenAndServeTLS(hc.tlsCert, hc.tlsKey)
+			// The certificate comes from srv.TLSConfig.GetCertificate.
+			err = srv.ListenAndServeTLS("", "")
 		} else {
 			err = srv.ListenAndServe()
 		}

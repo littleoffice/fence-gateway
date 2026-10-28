@@ -24,6 +24,7 @@ attacker-controlled text, so they go only to the log, never to the model.
 | `fence.policy.reject` | the policy withheld a result |
 | `fence.verify.nokey`, `fence.key.unavailable` | no usable key |
 | `fence.key.loaded`, `fence.key.rotated`, `fence.key.unpinned` | key trust |
+| `upstream.plaintext` | the relay is reached over plain HTTP because `-insecure-upstream` is set |
 | `fence.version.mismatch` | the relay reports an older format than `-fence-version` requires |
 | `upstream.session.lost` | the relay dropped the gateway's session, and it was replaced |
 

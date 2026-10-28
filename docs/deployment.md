@@ -61,9 +61,12 @@ services:
     container_name: fence-gateway
     env_file: ./envs/.fence-gateway.env
     command:
-      - -upstream=http://mcp-searxng-relay:3000/mcp
+      - -upstream=https://mcp-searxng-relay:3000/mcp
+      - -upstream-ca=/run/secrets/relay-ca.crt
       - -pin=<relay key fingerprint>      # from the relay's startup banner
       - -policy=reject
+    volumes:
+      - ./secrets/relay-ca.crt:/run/secrets/relay-ca.crt:ro
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     read_only: true
@@ -73,10 +76,15 @@ services:
 
   mcp-searxng-relay:
     # ...as before, plus a persistent signing key so the pin survives restarts:
+    # and a certificate, since the gateway refuses plain HTTP to another host:
     environment:
       FENCE_SIGNING_KEY_FILE: /run/secrets/fence-key
+      MCP_TLS_CERT: /run/secrets/relay.crt
+      MCP_TLS_KEY: /run/secrets/relay.key
     volumes:
       - ./secrets/fence-key.pem:/run/secrets/fence-key:ro
+      - ./secrets/relay.crt:/run/secrets/relay.crt:ro
+      - ./secrets/relay.key:/run/secrets/relay.key:ro
     networks: [relay, egress]              # was [edge]; no ports: section
 
   searxng:
@@ -96,6 +104,25 @@ networks:
 Create the key once with `openssl genpkey -algorithm ed25519 -out secrets/fence-key.pem`
 and `chmod 600` it. The relay's startup banner then shows the same fingerprint on
 every start; that is the value for `-pin`.
+
+The relay's certificate comes from a small private CA that only the gateway
+trusts (`-upstream-ca`). Create both once:
+
+```bash
+cd secrets
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
+  -subj "/CN=relay CA" -keyout relay-ca.key -out relay-ca.crt
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+  -subj "/CN=mcp-searxng-relay" -keyout relay.key -out relay.csr
+openssl x509 -req -in relay.csr -CA relay-ca.crt -CAkey relay-ca.key -days 825 \
+  -extfile <(printf "subjectAltName=DNS:mcp-searxng-relay\nextendedKeyUsage=serverAuth") \
+  -out relay.crt
+chmod 600 relay-ca.key relay.key
+```
+
+Keep `relay-ca.key` off the host once the certificate is issued. Both sides
+re-read their files when they change, so replacing `relay.crt`/`relay.key` or
+`relay-ca.crt` in place needs no restart. See [TLS to the relay](#tls-to-the-relay).
 
 `envs/.fence-gateway.env`, for a single user (`static` mode):
 
@@ -127,6 +154,59 @@ podman exec caddy wget -qO- -T 5 http://mcp-searxng-relay:3000/health   # must f
 podman exec caddy wget -qO- -T 5 http://fence-gateway:9090/              # answers (401 without a token)
 podman logs fence-gateway | grep -E 'fence.key.loaded|upstream.connected'
 ```
+
+## TLS to the relay
+
+The gateway refuses a plain-HTTP `-upstream` on another host: every upstream
+request carries a bearer credential, and every tool result comes back over
+that hop. Loopback (`127.0.0.1`, `::1`, `localhost`) is always allowed.
+Three ways to meet it:
+
+- **A certificate from a public CA** (ACME, including the relay's own
+  `MCP_TLS_ACME_DOMAINS`, or cert-manager with an ACME Issuer). Works with no
+  gateway setting: the system roots verify it. It needs a public DNS name, so
+  it does not fit an in-cluster `*.svc` address.
+- **A private CA** (cert-manager with a CA or self-signed Issuer, or one you
+  run yourself). Give the gateway the CA bundle with `-upstream-ca` (or
+  `UPSTREAM_CA_FILE`). The bundle replaces the system roots for the relay's
+  host, so only that CA is trusted there. It may hold several CAs: put the
+  old and new one in it together while you rotate.
+- **Manually supplied certificates**, for setups without either. The relay
+  serves `MCP_TLS_CERT`/`MCP_TLS_KEY`; the gateway trusts their issuer with
+  `-upstream-ca`, or the system roots if a public CA signed them.
+
+Rotation needs no restart on either side. The relay re-reads `MCP_TLS_CERT`
+and `MCP_TLS_KEY` when they change, the gateway does the same for its own
+`MCP_TLS_CERT`/`MCP_TLS_KEY` and for the `-upstream-ca` bundle, so a
+cert-manager Secret mounted as a volume (not through `subPath`, which never
+updates) is picked up as cert-manager renews it.
+
+With cert-manager and a CA Issuer, the relay's certificate looks like this;
+mount the `relay-tls` Secret into the relay (`tls.crt`, `tls.key`) and its
+`ca.crt` into the gateway as the `-upstream-ca` bundle:
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: relay-tls
+  namespace: <relay namespace>
+spec:
+  secretName: relay-tls
+  dnsNames:
+    - <release>-searxng-mcp-relay.<namespace>.svc
+  usages: [server auth]
+  issuerRef:
+    kind: ClusterIssuer
+    name: <your CA issuer>
+```
+
+`-insecure-upstream` allows plain HTTP to another host anyway, for a network
+protected some other way (a service mesh that adds mTLS between the pods). The
+gateway then logs `upstream.plaintext` at startup. It has no effect in
+`UPSTREAM_MCP_AUTH_MODE=passthrough`, where the credential crossing that hop is
+the caller's own and also works at the gateway: there the upstream must be
+HTTPS.
 
 ## Kubernetes / searxng-helm
 
@@ -169,7 +249,8 @@ another namespace, put both selectors in one peer:
 
 The gateway itself runs as its own Deployment with the label
 `app.kubernetes.io/name: fence-gateway`, an Ingress (with TLS) for the clients,
-and `-upstream http://<release>-searxng-mcp-relay.<namespace>.svc:8080/mcp`.
+and `-upstream https://<release>-searxng-mcp-relay.<namespace>.svc:8080/mcp`
+with `-upstream-ca` (see [TLS to the relay](#tls-to-the-relay)).
 Its own NetworkPolicy needs egress to the relay, to DNS, and, in `exchange`
 mode or with OAuth, to the identity provider.
 

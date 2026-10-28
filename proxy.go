@@ -31,7 +31,10 @@ type gateway struct {
 	// exchanger trades callers' tokens for relay tokens (exchange mode);
 	// nil otherwise.
 	exchanger *tokenExchanger
-	up        *upstreamSession
+	// upCA is the -upstream-ca bundle the relay's certificate is checked
+	// against; nil means the system roots.
+	upCA *upstreamCA
+	up   *upstreamSession
 	// pool, when set, gives each downstream conversation a relay session of
 	// its own; nil means every call uses up.
 	pool *sessionPool

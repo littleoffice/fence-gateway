@@ -302,6 +302,7 @@ The reference implementation's event names:
 | `fence.policy.reject` | the policy withheld a result |
 | `fence.verify.nokey`, `fence.key.unavailable` | no usable key (G5.3) |
 | `fence.key.loaded`, `fence.key.rotated`, `fence.key.unpinned` | key trust (§6) |
+| `upstream.plaintext` | plain HTTP to the relay allowed by `-insecure-upstream` |
 | `fence.version.mismatch` | the producer reports an older format than `-fence-version` requires |
 
 ## 8. Caller identity (informative)

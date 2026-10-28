@@ -134,6 +134,11 @@ depth in [Verification](verification.md) and [Configuration](configuration.md)):
   enforcement, and an all-fenced check (`-require-all-fenced`)** let an operator
   tighten the guarantees to their threat model. Without a pin, the gateway
   refuses to fetch the relay's key over plain HTTP from another machine.
+- **TLS to the relay by default.** A plain-HTTP upstream on another host is
+  refused unless `-insecure-upstream` is set, and always in passthrough mode.
+  `-upstream-ca` trusts a private CA, and certificates on both sides are
+  re-read when they change. See
+  [deployment.md](deployment.md#tls-to-the-relay).
 
 Pointing at these is not a claim that the project is free of vulnerabilities —
 it is a proof of concept and should be treated as one. It is context for where
