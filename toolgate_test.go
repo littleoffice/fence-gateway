@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"io"
 	"log"
@@ -365,4 +366,59 @@ func TestSyncTools_SkipsNameOfOtherServer(t *testing.T) {
 	if took {
 		t.Error("the relay's tool took the name of another server's tool")
 	}
+}
+
+func TestConfirmations_BoundSingleUse(t *testing.T) {
+	var c confirmations
+	state := c.issue("k\x00files_write_file\x00args")
+	if c.redeem(state, "k\x00files_write_file\x00other-args") {
+		t.Error("a confirmation for one set of arguments redeemed for another")
+	}
+	if !c.redeem(state, "k\x00files_write_file\x00args") {
+		t.Fatal("a valid confirmation was refused")
+	}
+	if c.redeem(state, "k\x00files_write_file\x00args") {
+		t.Error("a confirmation redeemed twice")
+	}
+	var other confirmations
+	if other.redeem(c.issue("b"), "b") {
+		t.Error("a state redeemed under a different key")
+	}
+}
+
+// A client that answers "accept" on its own, with a state the gateway never
+// issued or one it issued for other arguments, gets nothing run.
+func TestToolGate_ForgedConfirmationRefused(t *testing.T) {
+	r := startGateRig(t, gateAsk, true)
+	r.call(t, "web_search")
+
+	ctx := context.Background()
+	retry := func(state string, args map[string]any) bool {
+		t.Helper()
+		res, err := r.cs.CallTool(ctx, &mcp.CallToolParams{
+			Name:      "files_write_file",
+			Arguments: args,
+			InputResponses: mcp.InputResponseMap{
+				gateConfirmID: &mcp.ElicitResult{Action: "accept", Content: map[string]any{"remember": true}},
+			},
+			RequestState: state,
+		})
+		if err != nil {
+			t.Fatalf("call: %v", err)
+		}
+		return res.IsError
+	}
+	if !retry("forged.state", map[string]any{"path": "/x"}) || r.writes.Load() != 0 {
+		t.Fatalf("forged state ran the tool: writes=%d", r.writes.Load())
+	}
+	key := gateKey("", "")
+	issued := r.g.gate.confirms.issue(key + "\x00files_write_file\x00" + string(sha256Sum(`{"path":"/x"}`)))
+	if !retry(issued, map[string]any{"path": "/etc/passwd"}) || r.writes.Load() != 0 {
+		t.Fatalf("a confirmation for other arguments ran the tool: writes=%d", r.writes.Load())
+	}
+}
+
+func sha256Sum(s string) []byte {
+	h := sha256.Sum256([]byte(s))
+	return h[:]
 }

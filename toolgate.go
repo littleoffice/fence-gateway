@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,8 +57,8 @@ const (
 	maxGatedConversations = 10_000
 	// gateIdle is how long a conversation's taint outlives its last call.
 	gateIdle = 24 * time.Hour
-	// gateElicitTimeout bounds how long a call waits for the user to answer.
-	gateElicitTimeout = 2 * time.Minute
+	// gateConfirmID names the one input request a confirmation carries.
+	gateConfirmID = "confirm"
 	// maxShownArgs bounds the arguments shown in a confirmation.
 	maxShownArgs = 800
 )
@@ -322,6 +323,9 @@ type toolGate struct {
 	mode  string
 	audit *log.Logger
 
+	// confirms signs the state of a question to the user (confirm.go).
+	confirms confirmations
+
 	mu    sync.Mutex
 	convs map[string]*gateState
 }
@@ -422,11 +426,11 @@ func (g *gateway) gatedHandler(ts *toolServer, upstreamName, name string, kind g
 		key := gateKey(identity, conversationID(req))
 
 		if !kind.safe && g.gate.gated(key, name) {
-			if !g.confirmTool(ctx, req, key, identity, name, req.Params.Arguments) {
-				g.hc.metrics.recordCall(outcomeBlocked, 0)
-				return blocked("this conversation has read outside content, which can carry instructions " +
-					"planted by someone else, and " + name + " can change things or send data out. " +
-					"The user did not confirm the call"), nil
+			if res, ok := g.confirmTool(req, key, identity, name); !ok {
+				if res.IsError {
+					g.hc.metrics.recordCall(outcomeBlocked, 0)
+				}
+				return res, nil
 			}
 		} else {
 			g.hc.metrics.gateDecision(gateAllowed)
@@ -448,57 +452,80 @@ func (g *gateway) gatedHandler(ts *toolServer, upstreamName, name string, kind g
 	}
 }
 
-// confirmTool asks the user whether a gated call may run. It reports false
-// when the user declines, cannot be asked, or -tool-gate is block.
-func (g *gateway) confirmTool(ctx context.Context, req *mcp.CallToolRequest, key, identity, name string, args json.RawMessage) bool {
+// confirmTool decides a gated call. It returns (nil, true) to run it, or a
+// result to return instead: the question to the user, or a refusal.
+//
+// The question travels as a multi round-trip request (SEP-2322): an
+// input-required result carrying the elicitation and a signed state, which
+// the client echoes back with the user's answer when it retries the call. On
+// protocol versions before 2026-07-28 the SDK makes the same round trip
+// itself. The state is bound to the conversation, the tool and the exact
+// arguments, and is single-use, so a "yes" covers only the call the user saw.
+func (g *gateway) confirmTool(req *mcp.CallToolRequest, key, identity, name string) (*mcp.CallToolResult, bool) {
+	refuse := func(why string) (*mcp.CallToolResult, bool) {
+		return blocked("this conversation has read outside content, which can carry instructions " +
+			"planted by someone else, and " + name + " can change things or send data out. " + why), false
+	}
 	if g.gate.mode == gateBlock || !canElicit(req) {
 		g.audit.Printf("gate.blocked identity=%q tool=%q mode=%s", identity, name, g.gate.mode)
 		g.hc.metrics.gateDecision(gateBlocked)
-		return false
+		return refuse("The user could not be asked to confirm the call")
 	}
-	shown := string(args)
-	if len(shown) > maxShownArgs {
-		shown = shown[:maxShownArgs] + "…"
-	}
-	ectx, cancel := context.WithTimeout(ctx, gateElicitTimeout)
-	defer cancel()
-	res, err := req.Session.Elicit(ectx, &mcp.ElicitParams{
-		Message: "This conversation has read content from the web or another outside source, which can carry " +
-			"instructions planted by someone else. The AI now wants to run " + name + " with:\n\n" + shown +
-			"\n\nIt can change things or send data out. Allow it?",
-		RequestedSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"remember": map[string]any{
-					"type":    "boolean",
-					"title":   "Allow " + name + " for the rest of this conversation",
-					"default": false,
+	args := sha256.Sum256(req.Params.Arguments)
+	binding := key + "\x00" + name + "\x00" + string(args[:])
+
+	if req.Params.RequestState == "" && req.Params.InputResponses == nil {
+		shown := string(req.Params.Arguments)
+		if len(shown) > maxShownArgs {
+			shown = shown[:maxShownArgs] + "…"
+		}
+		return &mcp.CallToolResult{
+			InputRequests: mcp.InputRequestMap{gateConfirmID: &mcp.ElicitParams{
+				Mode: "form",
+				Message: "This conversation has read content from the web or another outside source, which can " +
+					"carry instructions planted by someone else. The AI now wants to run " + name + " with:\n\n" +
+					shown + "\n\nIt can change things or send data out. Allow it?",
+				RequestedSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"remember": map[string]any{
+							"type":    "boolean",
+							"title":   "Allow " + name + " for the rest of this conversation",
+							"default": false,
+						},
+					},
 				},
-			},
-		},
-	})
-	if err != nil {
-		g.audit.Printf("gate.ask_failed identity=%q tool=%q err=%q", identity, name, err)
+			}},
+			RequestState: g.gate.confirms.issue(binding),
+		}, false
+	}
+
+	if !g.gate.confirms.redeem(req.Params.RequestState, binding) {
+		g.audit.Printf("gate.confirmation_mismatch identity=%q tool=%q", identity, name)
 		g.hc.metrics.gateDecision(gateBlocked)
-		return false
+		return refuse("The confirmation did not match this call")
 	}
-	if res.Action != "accept" {
-		g.audit.Printf("gate.declined identity=%q tool=%q action=%s", identity, name, res.Action)
+	answer, _ := req.Params.InputResponses[gateConfirmID].(*mcp.ElicitResult)
+	if answer == nil || answer.Action != "accept" {
+		action := "none"
+		if answer != nil {
+			action = answer.Action
+		}
+		g.audit.Printf("gate.declined identity=%q tool=%q action=%s", identity, name, action)
 		g.hc.metrics.gateDecision(gateDeclined)
-		return false
+		return refuse("The user did not confirm the call")
 	}
-	remember, _ := res.Content["remember"].(bool)
+	remember, _ := answer.Content["remember"].(bool)
 	if remember {
 		g.gate.allowForConversation(key, name)
 	}
 	g.audit.Printf("gate.confirmed identity=%q tool=%q remember=%t", identity, name, remember)
 	g.hc.metrics.gateDecision(gateConfirmed)
-	return true
+	return nil, true
 }
 
 // canElicit reports whether the client behind req declared elicitation
-// support. A stateless HTTP transport declares it but cannot carry the
-// request; Elicit then fails, and the call is blocked.
+// support.
 func canElicit(req *mcp.CallToolRequest) bool {
 	if req == nil || req.Session == nil {
 		return false
