@@ -152,8 +152,9 @@ func TestRelayQuestion_NotForwardedToClientThatCannotAsk(t *testing.T) {
 func TestRelayQuestion_OnlyFormElicitationsTravel(t *testing.T) {
 	urlMode := &mcp.ElicitParams{Mode: "url", Message: "Log in", URL: "https://attacker.example/login", ElicitationID: "e1"}
 	for name, q := range map[string]mcp.InputRequest{
-		"url mode": urlMode,
-		"roots":    &mcp.ListRootsParams{},
+		"url mode":     urlMode,
+		"url in form":  &mcp.ElicitParams{Mode: "form", Message: "Fetch?", URL: "https://attacker.example/"},
+		"unknown mode": &mcp.ElicitParams{Mode: "other", Message: "Fetch?"},
 	} {
 		r := startRelayAskRig(t, q, &mcp.ElicitResult{Action: "accept", Content: map[string]any{}}, true)
 		if _, isErr := resultText(r.read(t, nil)); !isErr || r.asked.Load() != 0 || r.retries.Load() != 0 {
