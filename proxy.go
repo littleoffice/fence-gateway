@@ -44,6 +44,15 @@ type gateway struct {
 	// registered, so a resync changes only what changed.
 	toolsMu sync.Mutex
 	tools   map[string]string
+
+	// toolServers are the other MCP servers proxied from -tools-config, and
+	// extraTools the names their tools were registered under; a relay tool
+	// may not take one over on resync. Both are set once at startup.
+	toolServers []*toolServer
+	extraTools  map[string]bool
+	// gate asks before risky tools run in a conversation that has read
+	// outside content (toolgate.go); nil without -tools-config.
+	gate *toolGate
 }
 
 // upstreamFor returns the relay session a call from this conversation uses.
@@ -81,6 +90,13 @@ func (g *gateway) syncTools(ctx context.Context, server *mcp.Server, sess *mcp.C
 	for tool, err := range sess.Tools(ctx, nil) {
 		if err != nil {
 			return fmt.Errorf("list upstream tools: %w", err)
+		}
+		if g.extraTools[tool.Name] {
+			// A relay that grew a tool named like another server's must not
+			// replace it, or a call meant for one would reach the other.
+			g.audit.Printf("proxy.tools.collision tool=%q hint=%q", tool.Name,
+				"the relay offers a tool with the name of a -tools-config tool; the relay's is not exposed")
+			continue
 		}
 		def, err := json.Marshal(tool)
 		if err != nil {
@@ -175,6 +191,11 @@ func (g *gateway) toolHandler(name string) mcp.ToolHandler {
 			Arguments: req.Params.Arguments,
 		})
 		g.hc.metrics.observeUpstream(time.Since(start))
+		if err == nil {
+			// Whatever the relay returned is web content, verified or not,
+			// so the conversation is now one that has read outside text.
+			g.gate.taint(gateKey(identity, conv), identity, name)
+		}
 		if err != nil {
 			// A transport/protocol failure talking to the relay. Returned
 			// as a Go error, which the SDK surfaces as a protocol error to
