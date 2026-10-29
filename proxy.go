@@ -53,6 +53,9 @@ type gateway struct {
 	// gate asks before risky tools run in a conversation that has read
 	// outside content (toolgate.go); nil without -tools-config.
 	gate *toolGate
+	// relayConfirms signs the state of the relay's questions the gateway
+	// forwards to the user (relayconfirm.go).
+	relayConfirms confirmations
 }
 
 // upstreamFor returns the relay session a call from this conversation uses.
@@ -185,11 +188,22 @@ func (g *gateway) toolHandler(name string) mcp.ToolHandler {
 		// relay keeps its fetch history per conversation (upstream.go).
 		conv := conversationID(req)
 		ctx = withConversation(ctx, conv)
+		params := &mcp.CallToolParams{Name: name, Arguments: req.Params.Arguments}
+		if req.Params.RequestState != "" || req.Params.InputResponses != nil {
+			// The retry answering a question the relay asked
+			// (relayconfirm.go). Only a state the gateway issued for this
+			// very call is passed on.
+			relayState, ok := g.unwrapRelayAnswer(req, identity, conv, name)
+			if !ok {
+				g.audit.Printf("relay.confirm.mismatch tool=%q identity=%q", name, identity)
+				g.hc.metrics.recordCall(outcomeBlocked, 0)
+				return blocked("the confirmation did not match this call"), nil
+			}
+			params.InputResponses = req.Params.InputResponses
+			params.RequestState = relayState
+		}
 		start := time.Now()
-		res, err := g.upstreamFor(identity, conv, req.Session).CallTool(ctx, &mcp.CallToolParams{
-			Name:      name,
-			Arguments: req.Params.Arguments,
-		})
+		res, err := g.upstreamFor(identity, conv, req.Session).CallTool(ctx, params)
 		g.hc.metrics.observeUpstream(time.Since(start))
 		if err == nil {
 			// Whatever the relay returned is web content, verified or not,
@@ -207,6 +221,9 @@ func (g *gateway) toolHandler(name string) mcp.ToolHandler {
 			g.audit.Printf("upstream.error tool=%q identity=%q err=%q", name, identity, err)
 			g.hc.metrics.recordCall(outcomeUpstreamError, 0)
 			return nil, errUpstreamCall
+		}
+		if res.InputRequests != nil || res.NeedsInput() {
+			return g.forwardRelayQuestion(req, identity, conv, name, res), nil
 		}
 		return g.verify(ctx, name, identity, res), nil
 	}

@@ -57,12 +57,15 @@ const (
 	// outcomeForwarded: a tool of another server (-tools-config), whose
 	// result carries no fence and was delivered unchanged.
 	outcomeForwarded
+	// outcomeAsked: the relay asked the user a question (a fetch needing
+	// confirmation), and the gateway passed it to the client.
+	outcomeAsked
 	numOutcomes
 )
 
 var outcomeLabels = [numOutcomes]string{
 	"verified", "unfenced", "rejected", "annotated", "passed_unverified", "blocked", "upstream_error",
-	"forwarded",
+	"forwarded", "asked",
 }
 
 // gateOutcome labels fence_gateway_tool_gate_total{decision=...}: what the

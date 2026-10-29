@@ -370,7 +370,7 @@ const upstreamConnectTimeout = 30 * time.Second
 // starting does not fail the gateway outright.
 func (g *gateway) connectUpstream(ctx context.Context) (*mcp.ClientSession, error) {
 	transport := g.upstreamTransport()
-	client := mcp.NewClient(&mcp.Implementation{Name: "fence-gateway", Version: ServerVersion}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "fence-gateway", Version: ServerVersion}, upstreamClientOptions())
 
 	var lastErr error
 	backoff := 500 * time.Millisecond
