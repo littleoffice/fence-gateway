@@ -113,7 +113,7 @@ func loadToolsConfig(file string, multiCaller, insecure bool) (*toolsConfig, err
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	dec := json.NewDecoder(f)
 	dec.DisallowUnknownFields()
 	var tc toolsConfig
