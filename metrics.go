@@ -54,12 +54,33 @@ const (
 	outcomeBlocked
 	// outcomeUpstreamError: the call to the relay itself failed.
 	outcomeUpstreamError
+	// outcomeForwarded: a tool of another server (-tools-config), whose
+	// result carries no fence and was delivered unchanged.
+	outcomeForwarded
+	// outcomeAsked: the relay asked the user a question (a fetch needing
+	// confirmation), and the gateway passed it to the client.
+	outcomeAsked
 	numOutcomes
 )
 
 var outcomeLabels = [numOutcomes]string{
 	"verified", "unfenced", "rejected", "annotated", "passed_unverified", "blocked", "upstream_error",
+	"forwarded", "asked",
 }
+
+// gateOutcome labels fence_gateway_tool_gate_total{decision=...}: what the
+// tool gate (toolgate.go) did with a call to another server's tool.
+type gateOutcome int
+
+const (
+	gateAllowed   gateOutcome = iota // ran without asking: safe tool, or untainted conversation
+	gateConfirmed                    // the user allowed it
+	gateDeclined                     // the user declined or dismissed it
+	gateBlocked                      // could not ask, or -tool-gate block
+	numGateOutcomes
+)
+
+var gateOutcomeLabels = [numGateOutcomes]string{"allowed", "confirmed", "declined", "blocked"}
 
 // failReason classifies why a result failed verification. Closed set: the
 // label values of fence_gateway_verification_failures_total{reason=...}. The
@@ -119,6 +140,7 @@ type metrics struct {
 	authFailures   [numAuthEndpoints]atomic.Int64
 	authThrottled  atomic.Int64
 	relayScrapes   atomic.Int64 // failed /metrics/relay fetches
+	gate           [numGateOutcomes]atomic.Int64
 
 	// upstream call latency: a cumulative histogram, one count per bucket
 	// plus +Inf, with the sum kept in microseconds.
@@ -138,6 +160,12 @@ func (m *metrics) recordCall(o callOutcome, why failReasons) {
 		if why&(1<<r) != 0 {
 			m.failures[r].Add(1)
 		}
+	}
+}
+
+func (m *metrics) gateDecision(o gateOutcome) {
+	if m != nil {
+		m.gate[o].Add(1)
 	}
 }
 
@@ -230,6 +258,12 @@ func (m *metrics) write(w io.Writer) (err error) {
 		"Tool results that failed verification, by reason; a result failing for several reasons counts under each.")
 	for i, l := range reasonLabels {
 		printf("fence_gateway_verification_failures_total{reason=%q} %d\n", l, m.failures[i].Load())
+	}
+
+	header("fence_gateway_tool_gate_total", "counter",
+		"Calls to other servers' tools (-tools-config), by what the tool gate did.")
+	for i, l := range gateOutcomeLabels {
+		printf("fence_gateway_tool_gate_total{decision=%q} %d\n", l, m.gate[i].Load())
 	}
 
 	header("fence_gateway_fences_verified_total", "counter", "Individual fences whose signature verified.")

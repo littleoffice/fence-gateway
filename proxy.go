@@ -44,6 +44,18 @@ type gateway struct {
 	// registered, so a resync changes only what changed.
 	toolsMu sync.Mutex
 	tools   map[string]string
+
+	// toolServers are the other MCP servers proxied from -tools-config, and
+	// extraTools the names their tools were registered under; a relay tool
+	// may not take one over on resync. Both are set once at startup.
+	toolServers []*toolServer
+	extraTools  map[string]bool
+	// gate asks before risky tools run in a conversation that has read
+	// outside content (toolgate.go); nil without -tools-config.
+	gate *toolGate
+	// relayConfirms signs the state of the relay's questions the gateway
+	// forwards to the user (relayconfirm.go).
+	relayConfirms confirmations
 }
 
 // upstreamFor returns the relay session a call from this conversation uses.
@@ -81,6 +93,13 @@ func (g *gateway) syncTools(ctx context.Context, server *mcp.Server, sess *mcp.C
 	for tool, err := range sess.Tools(ctx, nil) {
 		if err != nil {
 			return fmt.Errorf("list upstream tools: %w", err)
+		}
+		if g.extraTools[tool.Name] {
+			// A relay that grew a tool named like another server's must not
+			// replace it, or a call meant for one would reach the other.
+			g.audit.Printf("proxy.tools.collision tool=%q hint=%q", tool.Name,
+				"the relay offers a tool with the name of a -tools-config tool; the relay's is not exposed")
+			continue
 		}
 		def, err := json.Marshal(tool)
 		if err != nil {
@@ -169,12 +188,28 @@ func (g *gateway) toolHandler(name string) mcp.ToolHandler {
 		// relay keeps its fetch history per conversation (upstream.go).
 		conv := conversationID(req)
 		ctx = withConversation(ctx, conv)
+		params := &mcp.CallToolParams{Name: name, Arguments: req.Params.Arguments}
+		if req.Params.RequestState != "" || req.Params.InputResponses != nil {
+			// The retry answering a question the relay asked
+			// (relayconfirm.go). Only a state the gateway issued for this
+			// very call is passed on.
+			relayState, ok := g.unwrapRelayAnswer(req, identity, conv, name)
+			if !ok {
+				g.audit.Printf("relay.confirm.mismatch tool=%q identity=%q", name, identity)
+				g.hc.metrics.recordCall(outcomeBlocked, 0)
+				return blocked("the confirmation did not match this call"), nil
+			}
+			params.InputResponses = req.Params.InputResponses
+			params.RequestState = relayState
+		}
 		start := time.Now()
-		res, err := g.upstreamFor(identity, conv, req.Session).CallTool(ctx, &mcp.CallToolParams{
-			Name:      name,
-			Arguments: req.Params.Arguments,
-		})
+		res, err := g.upstreamFor(identity, conv, req.Session).CallTool(ctx, params)
 		g.hc.metrics.observeUpstream(time.Since(start))
+		if err == nil {
+			// Whatever the relay returned is web content, verified or not,
+			// so the conversation is now one that has read outside text.
+			g.gate.taint(gateKey(identity, conv), identity, name)
+		}
 		if err != nil {
 			// A transport/protocol failure talking to the relay. Returned
 			// as a Go error, which the SDK surfaces as a protocol error to
@@ -186,6 +221,9 @@ func (g *gateway) toolHandler(name string) mcp.ToolHandler {
 			g.audit.Printf("upstream.error tool=%q identity=%q err=%q", name, identity, err)
 			g.hc.metrics.recordCall(outcomeUpstreamError, 0)
 			return nil, errUpstreamCall
+		}
+		if res.InputRequests != nil || res.NeedsInput() {
+			return g.forwardRelayQuestion(req, identity, conv, name, res), nil
 		}
 		return g.verify(ctx, name, identity, res), nil
 	}

@@ -103,6 +103,8 @@ func main() {
 		reqAll   = flag.Bool("require-all-fenced", false, "treat any unsigned text in a tool result as a failure, including the relay's unfenced no-results reply and error messages")
 		insecure = flag.Bool("insecure-upstream", false, "allow a plain-HTTP -upstream (and UPSTREAM_METRICS_URL) to another host; only on a network protected some other way, such as a service mesh with mTLS")
 		upCA     = flag.String("upstream-ca", os.Getenv("UPSTREAM_CA_FILE"), "PEM bundle of the CAs that issue the relay's certificate, trusted instead of the system roots (env: UPSTREAM_CA_FILE)")
+		toolsCfg = flag.String("tools-config", os.Getenv("TOOLS_CONFIG_FILE"), "JSON file of other MCP servers to proxy, so the tool gate covers their tools (env: TOOLS_CONFIG_FILE)")
+		gateFlag = flag.String("tool-gate", "ask", "for other servers' tools that can change things or send data out, once a conversation has read outside content: ask|block|off")
 		version  = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -248,6 +250,16 @@ func main() {
 	if err := checkSharedRelayIdentity(ua, hc); err != nil {
 		fatal("%v", err)
 	}
+	gateMode, err := parseGateMode(*gateFlag)
+	if err != nil {
+		fatal("%v", err)
+	}
+	var tools *toolsConfig
+	if f := strings.TrimSpace(*toolsCfg); f != "" {
+		if tools, err = loadToolsConfig(f, hc.multiCaller(), *insecure); err != nil {
+			fatal("-tools-config %q: %v", f, err)
+		}
+	}
 
 	if _, err := keys.Refresh(ctx); err != nil {
 		// Not fatal: the relay may not be serving its key endpoint yet.
@@ -319,6 +331,20 @@ func main() {
 	if err := g.registerTools(ctx, server); err != nil {
 		fatal("register tools: %v", err)
 	}
+	// Other MCP servers, and the gate in front of their tools (toolgate.go).
+	// Registered after the relay's tools, so a clash of names fails here.
+	if tools != nil {
+		g.gate = &toolGate{mode: gateMode, audit: audit}
+		if err := g.registerToolServers(ctx, server, tools); err != nil {
+			fatal("-tools-config: %v", err)
+		}
+		defer func() {
+			for _, ts := range g.toolServers {
+				_ = ts.up.Close()
+			}
+		}()
+		audit.Printf("gate.mode mode=%s servers=%d", gateMode, len(g.toolServers))
+	}
 	g.up.onReconnect = g.resyncTools(server)
 
 	// Serve. MCP_PORT selects the Streamable HTTP transport (remote); otherwise
@@ -344,7 +370,7 @@ const upstreamConnectTimeout = 30 * time.Second
 // starting does not fail the gateway outright.
 func (g *gateway) connectUpstream(ctx context.Context) (*mcp.ClientSession, error) {
 	transport := g.upstreamTransport()
-	client := mcp.NewClient(&mcp.Implementation{Name: "fence-gateway", Version: ServerVersion}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "fence-gateway", Version: ServerVersion}, upstreamClientOptions())
 
 	var lastErr error
 	backoff := 500 * time.Millisecond
