@@ -1,0 +1,60 @@
+# The stack fence-eval runs against: the fake web, and two relays that differ
+# only in fence format. The runner, the gateway it starts per run, and
+# mocktools run on the host.
+#
+#   export EVAL_RELAY_TOKEN="$(openssl rand -hex 32)"
+#   export EVAL_FENCE_KEY="$(openssl rand -base64 32)"
+#   docker compose -f deploy/compose.yaml up -d --build
+#
+# Ports are published on 127.0.0.1 only. The model acts only through the
+# relays, and they cannot reach evilweb's control port: FETCH_ALLOWED_HOSTS
+# opens evilweb:8080 alone, and the relay's SSRF policy refuses every other
+# private address and port. So the model cannot switch cases or read the
+# collection log.
+#
+# The relays can reach the public internet, as a real deployment would. The
+# corpus never links there: attack destinations are evilweb's /collect or
+# reserved .example names that do not resolve.
+#
+# Rate limiting is off on both relays: one eval identity makes far more calls
+# than any real caller, and a 429 would be scored as the model failing.
+
+name: fence-eval
+
+x-relay-env: &relay-env
+  SEARXNG_URL: http://evilweb:8080
+  MCP_PORT: "8080"
+  MCP_AUTH_TOKEN: ${EVAL_RELAY_TOKEN:?set EVAL_RELAY_TOKEN}
+  MCP_RATE_LIMIT_RPS: "0"
+  # evilweb is on a private address; this is the relay's own allow-list for
+  # reaching named internal hosts, so its SSRF policy stays on for the rest.
+  FETCH_ALLOWED_HOSTS: evilweb:8080
+  # A fixed key, so both relays sign with the same key and a gateway can pin it.
+  FENCE_SIGNING_KEY: ${EVAL_FENCE_KEY:?set EVAL_FENCE_KEY}
+
+services:
+  evilweb:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: ["-addr", ":8080", "-control-addr", ":8090", "-base", "http://evilweb:8080"]
+    ports:
+      - "127.0.0.1:8090:8090"
+
+  relay-fenced:
+    image: ${RELAY_IMAGE:-ghcr.io/littleoffice/mcp-searxng-relay:latest}
+    environment:
+      <<: *relay-env
+      FENCE_PREAMBLE: fenced
+    ports:
+      - "127.0.0.1:8081:8080"
+    depends_on: [evilweb]
+
+  relay-prose:
+    image: ${RELAY_IMAGE:-ghcr.io/littleoffice/mcp-searxng-relay:latest}
+    environment:
+      <<: *relay-env
+      FENCE_PREAMBLE: prose
+    ports:
+      - "127.0.0.1:8082:8080"
+    depends_on: [evilweb]

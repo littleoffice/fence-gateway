@@ -117,6 +117,17 @@ jobs:
         # the tests actually ran on this revision.
         run: go test -race -count=1 -v ./...
 
+      - name: Eval harness
+        # eval/ is its own Go module (so the gateway's go.mod carries none of
+        # its dependencies), and `./...` above does not descend into it. This
+        # checks the harness builds and the shipped corpus validates; running
+        # the eval itself needs the relay stack and a model (eval/README.md).
+        working-directory: eval
+        run: |
+          go vet ./...
+          go test -race -count=1 ./...
+          go run ./cmd/fence-eval validate
+
       - name: Interop against the pinned relay
         # The committed vectors under interop/testdata/relay already run in
         # `go test` above. This regenerates them from the relay's own fence.go

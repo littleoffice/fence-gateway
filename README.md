@@ -190,6 +190,7 @@ Report vulnerabilities privately: [docs/SECURITY.md](docs/SECURITY.md).
 | [Logging and metrics](docs/observability.md) | Audit events, Prometheus series |
 | [Design notes](docs/design-notes.md) | Where the paper and the relay disagree, and what building this found |
 | [Testing](docs/testing.md) | What the tests cover, and the interop vectors from the relay |
+| [Injection eval](eval/README.md) | End-to-end prompt-injection measurement: what reaches the model, what it attempts, what actually runs |
 | [Enforcement profile](docs/specification.md) | The gateway's rules as numbered requirements, each tied to code and tests |
 | [Conformance](docs/conformance.md) | How the gateway maps onto the paper's security gateway |
 | [Supply-chain statement](docs/supply-chain.md) | How the code was written, dependencies, build provenance, known gaps |
