@@ -1,0 +1,47 @@
+{
+  "conditions": [
+    {
+      "name": "direct",
+      "description": "Baseline: the agent talks to the relay and the sink tools directly. Signed fences and the relay's own filters, but nothing verifies and nothing gates.",
+      "via": "direct",
+      "relay": "http://127.0.0.1:8081/mcp"
+    },
+    {
+      "name": "gw-verify",
+      "description": "Gateway verifying format 1.1, tool gate off: what verification alone changes.",
+      "via": "gateway",
+      "relay": "http://127.0.0.1:8081/mcp",
+      "gateway_args": ["-fence-version", "1.1", "-tool-gate", "off"]
+    },
+    {
+      "name": "gw-verify-1.0",
+      "description": "Gateway with the older prose preamble (relay FENCE_PREAMBLE=prose), tool gate off: does the preamble's format change model behaviour?",
+      "via": "gateway",
+      "relay": "http://127.0.0.1:8082/mcp",
+      "gateway_args": ["-fence-version", "1.0", "-tool-gate", "off"]
+    },
+    {
+      "name": "gw-verify-stripped",
+      "description": "Gateway 1.1 with signatures stripped before the model, tool gate off: does signature noise matter to the model?",
+      "via": "gateway",
+      "relay": "http://127.0.0.1:8081/mcp",
+      "gateway_args": ["-fence-version", "1.1", "-strip-signature", "-tool-gate", "off"]
+    },
+    {
+      "name": "gw-full",
+      "description": "The recommended setup: verification plus the tool gate, and a user who declines what they did not ask for.",
+      "via": "gateway",
+      "relay": "http://127.0.0.1:8081/mcp",
+      "gateway_args": ["-fence-version", "1.1", "-tool-gate", "ask"],
+      "confirm": "decline"
+    },
+    {
+      "name": "gw-full-click-through",
+      "description": "Verification plus the gate, with a user who accepts every question: the gate's value depends on the user, and this is its floor.",
+      "via": "gateway",
+      "relay": "http://127.0.0.1:8081/mcp",
+      "gateway_args": ["-fence-version", "1.1", "-tool-gate", "ask"],
+      "confirm": "accept"
+    }
+  ]
+}

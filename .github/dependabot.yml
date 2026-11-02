@@ -26,6 +26,24 @@ updates:
       - dependencies
       - security
 
+  # The eval harness (eval/) is a separate Go module with its own
+  # dependencies (the Anthropic SDK among them), none of which reach the
+  # gateway binary. Tracked separately so its bumps never mix with the
+  # gateway's. Its `go` directive is kept equal to the root go.mod's by hand.
+  - package-ecosystem: gomod
+    directory: "/eval"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 99
+    groups:
+      eval-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+
   # Bumps the builder image in the Dockerfile — both the tag and the sha256
   # digest — when a new Go patch release lands.
   #
