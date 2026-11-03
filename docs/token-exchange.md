@@ -115,10 +115,11 @@ the relay's client, and `iss` is what the relay's `MCP_OAUTH_ISSUER` says.
 
 ## What still to know
 
-- **Rate limits at the relay.** The relay keys its per-caller rate limit on
-  static-token identities and falls back to the client IP for OAuth callers.
-  Behind a gateway, every OAuth caller then shares one limit until the relay
-  keys it on the OAuth subject.
+- **Rate limits at the relay.** From mcp-searxng-relay v2.0.0 the relay bills
+  each OAuth caller to its own identity claim once the token has verified, so
+  callers behind the gateway each get their own limit. Older relays fell back
+  to the client IP for OAuth callers, which put every caller behind a gateway
+  in one bucket.
 - **Keep the relay network-isolated anyway.** Exchange makes a caller's own token
   useless at the relay; allowing only the gateway to reach it is still the
   second layer.
@@ -126,3 +127,59 @@ the relay's client, and `iss` is what the relay's `MCP_OAUTH_ISSUER` says.
   holds a static gateway token, gets a blocked tool call; the reason goes to the
   audit log as `upstream.exchange.failed`. Nothing is sent under another
   credential.
+
+## One hop further: the user at the search backend
+
+The relay can carry the same user one hop further. With
+`SEARXNG_USER_TOKEN_MODE=exchange` it exchanges the relay token it received
+from the gateway for a token issued to your **search backend**, for the same
+user, and SearXNG's `relay_user_token` engine presents that to the backend. A
+permission-aware backend (a wiki, a ticket tracker, a document store) then
+answers with what that user may see, instead of what a shared service account
+may see. The user still logs in once.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as MCP client
+    participant IdP as Identity provider
+    participant G as fence-gateway
+    participant R as mcp-searxng-relay
+    participant S as SearXNG + relay_user_token
+    participant B as Search backend
+
+    C->>G: tools/call · Bearer A (aud = gateway)
+    G->>IdP: exchange A → relay
+    IdP-->>G: B (aud = relay)
+    G->>R: tools/call · Bearer B
+    R->>IdP: exchange B → backend
+    IdP-->>R: C (aud = backend)
+    R->>S: search · X-Relay-User-Token: C
+    S->>B: Authorization: Bearer C
+    B-->>S: that user's results
+    S-->>R: results
+    R-->>G: signed results
+    G-->>C: verified results
+```
+
+Each token is good at one place only: A at the gateway, B at the relay, C at
+the backend.
+
+What the gateway needs for it:
+
+- **`exchange` mode.** In `passthrough` the relay receives the caller's own
+  token, which also works at the gateway; the relay then exchanges a token
+  meant for someone else. Keep `exchange`.
+- **Nothing else.** The relay takes the user token from each tool call, not
+  from the MCP session. The gateway's sessions to the relay, opened under its
+  own client-credentials token (or `UPSTREAM_MCP_TOKEN`), keep working, and
+  every user's search still goes out with that user's token.
+
+At the identity provider, the relay's client needs permission to exchange
+relay tokens for backend tokens: a second exchange, configured like the first.
+
+Setting up the relay, the engine and the backend, and the deployment rules the
+last hop depends on:
+[Per-user tokens for SearXNG engines](https://github.com/littleoffice/mcp-searxng-relay/blob/main/docs/user-tokens.md)
+in mcp-searxng-relay, and its
+[searxng-helm values](https://github.com/littleoffice/searxng-helm/blob/main/docs/mcp-relay.md#per-user-tokens).

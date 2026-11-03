@@ -268,6 +268,11 @@ with `-upstream-ca` (see [TLS to the relay](#tls-to-the-relay)).
 Its own NetworkPolicy needs egress to the relay, to DNS, and, in `exchange`
 mode or with OAuth, to the identity provider.
 
+With the relay's per-user tokens on (`instances[].userToken` in searxng-helm),
+the chart also locks SearXNG to the relay pods and gives the relay its own
+OAuth settings; the gateway's side does not change. See
+[One hop further](token-exchange.md#one-hop-further-the-user-at-the-search-backend).
+
 Two things to know:
 
 - **NetworkPolicy needs a CNI that enforces it** (Calico, Cilium and most
