@@ -59,8 +59,10 @@ const (
 	gateIdle = 24 * time.Hour
 	// gateConfirmID names the one input request a confirmation carries.
 	gateConfirmID = "confirm"
-	// maxShownArgs bounds the arguments shown in a confirmation.
-	maxShownArgs = 800
+	// maxShownArgs is the most argument bytes a confirmation can show. A
+	// call with more is refused rather than shown in part: the user's "yes"
+	// covers the whole call, so it must not cover bytes they never saw.
+	maxShownArgs = 4000
 )
 
 // parseGateMode checks -tool-gate.
@@ -474,11 +476,22 @@ func (g *gateway) confirmTool(req *mcp.CallToolRequest, key, identity, name stri
 	args := sha256.Sum256(req.Params.Arguments)
 	binding := key + "\x00" + name + "\x00" + string(args[:])
 
+	// The confirmation is bound to all of the arguments, so all of them are
+	// shown, or the question is not asked. Cutting them off let a call put a
+	// harmless start in view and the part that mattered past the cut, and
+	// the user's "yes" then approved what they could not see.
+	if len(req.Params.Arguments) > maxShownArgs {
+		g.audit.Printf("gate.blocked identity=%q tool=%q mode=%s reason=arguments_too_long bytes=%d",
+			identity, name, g.gate.mode, len(req.Params.Arguments))
+		g.hc.metrics.gateDecision(gateBlocked)
+		return refuse(fmt.Sprintf("Its arguments are %d bytes, more than the %d that can be shown to the "+
+			"user in full, so the user was not asked. Make the call smaller, or ask the user to allow "+
+			"this tool for the conversation on a call that fits",
+			len(req.Params.Arguments), maxShownArgs))
+	}
+
 	if req.Params.RequestState == "" && req.Params.InputResponses == nil {
 		shown := string(req.Params.Arguments)
-		if len(shown) > maxShownArgs {
-			shown = shown[:maxShownArgs] + "…"
-		}
 		return &mcp.CallToolResult{
 			InputRequests: mcp.InputRequestMap{gateConfirmID: &mcp.ElicitParams{
 				Mode: "form",

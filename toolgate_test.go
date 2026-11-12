@@ -305,6 +305,29 @@ func TestToolGate_AsksOnlyAfterOutsideContent(t *testing.T) {
 	}
 }
 
+// A confirmation covers the whole call, so a call too long to show in full is
+// refused without asking: shown in part, its "yes" would cover the hidden rest.
+func TestToolGate_RefusesArgumentsTooLongToShow(t *testing.T) {
+	r := startGateRig(t, gateAsk, true)
+	r.call(t, "web_search")
+	r.answer.Store(&mcp.ElicitResult{Action: "accept"})
+
+	args := map[string]any{"path": "/x", "content": strings.Repeat("a", maxShownArgs)}
+	res, err := r.cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "files_write_file", Arguments: args})
+	if err != nil {
+		t.Fatal(err)
+	}
+	txt, isErr := resultText(res)
+	if !isErr || !strings.Contains(txt, "shown to the user in full") || r.asked.Load() != 0 || r.writes.Load() != 0 {
+		t.Fatalf("oversized write: isErr=%t asked=%d writes=%d text=%q", isErr, r.asked.Load(), r.writes.Load(), txt)
+	}
+
+	// A call that fits is still asked about, and runs once accepted.
+	if _, isErr := r.call(t, "files_write_file"); isErr || r.asked.Load() != 1 || r.writes.Load() != 1 {
+		t.Fatalf("write that fits: isErr=%t asked=%d writes=%d", isErr, r.asked.Load(), r.writes.Load())
+	}
+}
+
 func TestToolGate_OpenWorldToolTaints(t *testing.T) {
 	r := startGateRig(t, gateAsk, true)
 	r.call(t, "files_fetch_mail") // mail is outside content
