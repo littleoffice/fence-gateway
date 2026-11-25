@@ -3,7 +3,7 @@ module github.com/littleoffice/fence-gateway/eval
 go 1.27.4
 
 require (
-	github.com/anthropics/anthropic-sdk-go/v2 v2.9.0
+	github.com/anthropics/anthropic-sdk-go/v2 v2.13.0
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 )
 
