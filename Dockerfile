@@ -35,10 +35,10 @@ ARG SERVER_VERSION=dev
 
 # Pin the builder image by content digest, not by tag. Tags are mutable;
 # digests are immutable. This digest is the multi-arch manifest-list digest
-# for golang:1.27.1-trixie (the same version and pin mcp-searxng-relay uses),
+# for golang:1.27.4-trixie (the same version and pin mcp-searxng-relay uses),
 # so the same Dockerfile builds reproducibly on amd64 and arm64. Resolve a
 # fresh digest with, e.g.:
-#   docker buildx imagetools inspect golang:1.27.1-trixie
+#   docker buildx imagetools inspect golang:1.27.4-trixie
 # and copy the top-level index digest below. Bump deliberately as Go patch
 # releases land; pin-consistency.yml enforces that the Go version in this
 # FROM line matches the `go` directive in go.mod.

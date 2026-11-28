@@ -491,12 +491,12 @@ func (g *gateway) confirmTool(req *mcp.CallToolRequest, key, identity, name stri
 	}
 
 	if req.Params.RequestState == "" && req.Params.InputResponses == nil {
-		shown := string(req.Params.Arguments)
+		shown := showable(string(req.Params.Arguments))
 		return &mcp.CallToolResult{
 			InputRequests: mcp.InputRequestMap{gateConfirmID: &mcp.ElicitParams{
 				Mode: "form",
 				Message: "This conversation has read content from the web or another outside source, which can " +
-					"carry instructions planted by someone else. The AI now wants to run " + name + " with:\n\n" +
+					"carry instructions planted by someone else. The AI now wants to run " + showable(name) + " with:\n\n" +
 					shown + "\n\nIt can change things or send data out. Allow it?",
 				RequestedSchema: map[string]any{
 					"type": "object",

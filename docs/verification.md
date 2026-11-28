@@ -81,7 +81,8 @@ Any of these is a failure, and the policy applies. How the preamble came to be f
 ## Format versions
 
 `-fence-version` sets the oldest format accepted outright. `auto` (the default) follows
-the key endpoint as above, because the relay itself defaults to 1.0. `1.1` refuses 1.0
+the key endpoint as above, so it requires 1.1 from a relay at its default (`FENCE_PREAMBLE=fenced`,
+since relay v2.2.0) and 1.0 from one set back to `prose`. `1.1` refuses 1.0
 responses, so every response that reaches the model has a signed preamble and no
 unsigned text beside its fences. It is the setting to use once the relay runs with
 `FENCE_PREAMBLE=fenced`. `1.0` accepts either relay format but refuses fences with no

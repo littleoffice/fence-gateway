@@ -285,3 +285,29 @@ func TestToolsResyncWhenRelayReconnects(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// Behind a trusted proxy the throttle counts the address the proxy saw, the
+// last X-Forwarded-For entry, not one the client wrote in front of it.
+func TestClientAddr_UsesTheProxysEntry(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		xff   []string
+		trust bool
+		want  string
+	}{
+		{"no header", nil, true, "10.0.0.9"},
+		{"proxy only", []string{"203.0.113.7"}, true, "203.0.113.7"},
+		{"client-spoofed prefix", []string{"1.2.3.4, 203.0.113.7"}, true, "203.0.113.7"},
+		{"two header lines", []string{"1.2.3.4", "198.51.100.2, 203.0.113.7"}, true, "203.0.113.7"},
+		{"untrusted", []string{"1.2.3.4"}, false, "10.0.0.9"},
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+		r.RemoteAddr = "10.0.0.9:4321"
+		for _, v := range tc.xff {
+			r.Header.Add("X-Forwarded-For", v)
+		}
+		if got := clientAddr(r, tc.trust); got != tc.want {
+			t.Errorf("%s: clientAddr = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}

@@ -6,9 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // confirmTTL is how long a question to the user stays answerable.
@@ -88,4 +90,25 @@ func (c *confirmations) redeem(state, binding string) bool {
 	}
 	c.used[nonce] = exp
 	return true
+}
+
+// showable returns s with every character a person would not see written out
+// as an escape: control characters other than newline, and format characters
+// such as bidi overrides, zero-width spaces and tag characters. A question
+// the user answers has to show them the whole of what they are approving;
+// without this, a right-to-left override could reverse part of a URL on
+// screen, or zero-width characters hide text between visible ones.
+func showable(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r == '\n' || unicode.IsPrint(r):
+			b.WriteRune(r)
+		case r <= 0xFFFF:
+			fmt.Fprintf(&b, `\u%04X`, r)
+		default:
+			fmt.Fprintf(&b, `\U%08X`, r)
+		}
+	}
+	return b.String()
 }

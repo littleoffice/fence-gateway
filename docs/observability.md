@@ -27,6 +27,13 @@ attacker-controlled text, so they go only to the log, never to the model.
 | `upstream.plaintext` | the relay is reached over plain HTTP because `-insecure-upstream` is set |
 | `fence.version.mismatch` | the relay reports an older format than `-fence-version` requires |
 | `upstream.session.lost` | the relay dropped the gateway's session, and it was replaced |
+| `relay.confirm.forwarded` | the relay asked the user to confirm a fetch, and the question was passed on |
+| `relay.confirm.refused` | the relay's question was not passed on: `cannot_ask` (the client has no elicitation), `unsupported_request` (not a bounded yes/no form) or `load_shedding` |
+| `relay.confirm.mismatch` | an answer arrived for a call other than the one asked about |
+| `gate.tainted` | a conversation read outside content, so gated tools now ask first |
+| `gate.blocked`, `gate.declined`, `gate.confirmed`, `gate.confirmation_mismatch` | what the tool gate did with a call of another server's tool |
+| `tools.server.connected`, `tools.server.synced`, `tools.registered`, `tools.server.error` | the servers from `-tools-config` |
+| `proxy.tools.synced`, `proxy.tools.collision`, `proxy.tools.resync_failed` | the relay's tool list as the gateway mirrors it |
 
 The rules behind each event: [enforcement profile §7](specification.md#7-audit).
 
@@ -56,12 +63,14 @@ gateway's series with it. Configuration: [Metrics variables](configuration.md#me
 | `fence_gateway_auth_failures_total` | counter | `endpoint` | HTTP requests refused with 401 (`mcp`, `metrics`) |
 | `fence_gateway_auth_throttled_total` | counter | | MCP requests refused with 429 after too many failed logins |
 | `fence_gateway_relay_metrics_errors_total` | counter | | Failed fetches of the relay's `/metrics` |
-| `fence_gateway_upstream_call_duration_seconds` | histogram | | Duration of tool calls to the relay, including failed ones |
+| `fence_gateway_upstream_call_duration_seconds` | histogram | | Duration of tool calls to the relay and to `-tools-config` servers, including failed ones |
+| `fence_gateway_tool_gate_total` | counter | `decision` | Calls to other servers' tools, by what the tool gate did |
 
 Every label set is closed: values come from a fixed list in the code, never from a
 request or a tool result.
 
 | Label | Values |
 |---|---|
-| `outcome` | `verified`, `unfenced`, `rejected`, `annotated`, `passed_unverified`, `blocked`, `upstream_error` |
+| `outcome` | `verified`, `unfenced`, `rejected`, `annotated`, `passed_unverified`, `blocked`, `upstream_error`, `forwarded` (another server's tool ran), `asked` (a question went to the user) |
+| `decision` | `allowed`, `confirmed`, `declined`, `blocked` |
 | `reason` | `no_key`, `too_large`, `unsupported_content`, `invalid_fence`, `no_fence`, `unfenced_text`, `unsigned_text`, `layout`, `format` |

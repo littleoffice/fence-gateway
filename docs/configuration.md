@@ -12,6 +12,7 @@ entrypoint when running the container.
 - [Credentials for the relay](#credentials-for-the-relay)
 - [Which credential reaches the relay](#which-credential-reaches-the-relay)
 - [Stateless mode and upstream sessions](#stateless-mode-and-upstream-sessions)
+- [Other MCP servers and the tool gate](#other-mcp-servers-and-the-tool-gate)
 - [Metrics](#metrics)
 
 ## Flags
@@ -30,6 +31,8 @@ entrypoint when running the container.
 | `-paper-scheme` | off | Verify with the paper's literal `Ed25519(SHA-256(C ‖ M))` construction instead of the relay's. See [Design notes](design-notes.md#signature-construction). |
 | `-upstream-ca` | `$UPSTREAM_CA_FILE` | PEM bundle of the CAs that issue the relay's certificate, trusted for the relay's host instead of the system roots. Read at startup. See [TLS to the relay](deployment.md#tls-to-the-relay). |
 | `-insecure-upstream` | off | Allow a plain-HTTP `-upstream` (and `UPSTREAM_METRICS_URL`) on another host, for a network protected some other way such as a service mesh with mTLS. Without it, only HTTPS or loopback is accepted. |
+| `-tools-config` | `$TOOLS_CONFIG_FILE` | JSON file of other MCP servers to proxy, so the tool gate covers their tools. See [Other MCP servers and the tool gate](#other-mcp-servers-and-the-tool-gate). |
+| `-tool-gate` | `ask` | What happens to a call of another server's tool that can change things or send data out, once the conversation has read outside content: `ask`, `block` or `off`. |
 | `-token` | `$UPSTREAM_MCP_TOKEN` | The gateway's own credential for the relay. Prefer the environment variable: on the command line it shows in the process list and shell history, and the gateway warns. |
 | `-version` | | Print the version and exit. |
 
@@ -56,8 +59,8 @@ Static tokens must be ≥32 characters (`openssl rand -hex 32`).
 `GET /health` answers `ok` without a credential, for liveness and readiness
 probes; it says nothing else. A client session left idle for an hour is closed.
 A client address with 30 failed logins in a minute is refused (429) until the
-minute is up — counted per `X-Forwarded-For` client with
-`MCP_TRUST_FORWARDED_HEADERS`, otherwise per connection address, so behind a
+minute is up — counted per client address with `MCP_TRUST_FORWARDED_HEADERS` (the last
+`X-Forwarded-For` entry, the one your proxy added), otherwise per connection address, so behind a
 proxy without that setting all clients share one budget.
 
 ## OAuth 2.0 / OIDC
@@ -164,6 +167,50 @@ drops it: after a relay restart, or when the relay's janitor closes the session
 (`MCP_SESSION_MAX_AGE`, seven days by default). The call that finds the session gone
 reconnects under the gateway's own bootstrap credential and is retried once, so callers
 do not see it. The audit log records `upstream.session.lost`.
+
+## Other MCP servers and the tool gate
+
+Verification proves where web content came from; it does not stop a model that
+has read hostile text from acting on it. The damage needs a tool that changes
+something or sends data out. So the gateway can proxy other MCP servers as well,
+and once a conversation has read outside content, it asks the user before any of
+their tools that could do damage runs.
+
+`-tools-config` (or `TOOLS_CONFIG_FILE`) names a JSON file:
+
+```json
+{
+  "servers": [
+    {"name": "files", "command": ["mcp-server-filesystem", "/srv/share"]},
+    {"name": "tickets", "url": "https://tickets.internal/mcp", "token_env": "TICKETS_TOKEN", "allow": ["search_*"]}
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `name` | Prefix for the server's tools, which the client sees as `<name>_<tool>`. Lowercase letters, digits and `-`, up to 32 characters. |
+| `url` / `command` | A Streamable HTTP endpoint, or a command that speaks MCP over stdio. Exactly one. |
+| `token_env` | An environment variable holding a bearer token for `url`. |
+| `env` | Environment variables passed to `command`, besides `PATH`, `HOME`, `LANG` and `TMPDIR`. Nothing else of the gateway's environment reaches it. |
+| `allow` | Tool names (`path.Match` patterns, without the prefix) that are never gated. |
+| `shared` | Required with more than one downstream caller: acknowledges that every caller uses this server as the same identity. |
+
+A tool runs without asking only when its server declares it read-only and
+closed-world (the MCP `readOnlyHint` and `openWorldHint` annotations), or `allow`
+names it. Everything else, including a tool with no annotations, is gated. Those
+hints are the server's own claim, so list only servers you trust to make it.
+A conversation counts as having read outside content after any relay call, and
+after any other tool not declared closed-world.
+
+`-tool-gate` decides what a gated call in such a conversation gets: `ask` (the
+default) asks the user through MCP elicitation, showing the full arguments, and
+refuses when the client cannot ask or the arguments are over 4,000 bytes;
+`block` always refuses; `off` turns the gate off.
+
+Results from these servers carry no fences and pass through unchanged. A proxied
+server that asks the user a question of its own mid-call is not supported; the
+gateway forwards only the relay's questions.
 
 ## Metrics
 

@@ -316,14 +316,18 @@ func (a *authFailures) record(client string) {
 
 // clientAddr is the address failed attempts are counted against: the
 // connection's, or, when forwarded headers are trusted (the gateway sits
-// behind a reverse proxy that sets them), the first X-Forwarded-For entry.
+// behind a reverse proxy that sets them), the last X-Forwarded-For entry.
+// That is the one the proxy in front added, the address it saw the request
+// come from; every entry before it arrived from the client, which can write
+// anything there and would get a fresh throttle window with every guess.
 // Behind a proxy without that setting every client shares the proxy's
 // address, so one client's failures can hold up another's OAuth logins.
 func clientAddr(r *http.Request, trustForwarded bool) string {
 	if trustForwarded {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
-				return first
+		if vals := r.Header.Values("X-Forwarded-For"); len(vals) > 0 {
+			hops := strings.Split(vals[len(vals)-1], ",")
+			if last := strings.TrimSpace(hops[len(hops)-1]); last != "" {
+				return last
 			}
 		}
 	}

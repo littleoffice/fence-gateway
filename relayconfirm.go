@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -21,8 +22,11 @@ import (
 // The gateway passes the question on rather than answering it, and keeps
 // control of what it passes:
 //
-//   - only form elicitations travel; a url-mode one (which would send the user
-//     to a page the relay chose), sampling or roots request is refused;
+//   - only form elicitations that ask for nothing but a yes or no travel, with
+//     their text capped and invisible characters written out; a url-mode one
+//     (which would send the user to a page the relay chose), a form with
+//     fields, a sampling or a roots request is refused. The question is not
+//     covered by any fence signature, so this is what bounds it;
 //   - a client that cannot ask the user gets a refusal, not the question;
 //   - the relay's state is wrapped in a gateway token bound to the
 //     conversation, the tool, the arguments and the relay state itself, and
@@ -32,6 +36,35 @@ import (
 // A stateless downstream client on a protocol older than 2026-07-28 cannot
 // receive questions at all: the SDK's own elicitation fails there, and the
 // call errors as it would for any tool that asks.
+
+// maxRelayQuestion caps the text of a relay question the gateway passes on.
+// The relay's own question is a sentence or two around an address it cuts at
+// 500 bytes; anything far longer is not that question.
+const maxRelayQuestion = 2048
+
+// asksNothing reports whether an elicitation schema requests no fields: a
+// yes/no question, which is the only kind the relay sends. The question is
+// the one part of a relay response no fence signature covers, so the gateway
+// passes on only what it can bound. A form with fields would let a relay, or
+// whoever stands in for one, ask the user to type in anything at all, a
+// password included.
+func asksNothing(schema any) bool {
+	if schema == nil {
+		return true
+	}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return false
+	}
+	var s struct {
+		Type       string                     `json:"type"`
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if json.Unmarshal(raw, &s) != nil {
+		return false
+	}
+	return (s.Type == "" || s.Type == "object") && len(s.Properties) == 0
+}
 
 // relayStateSep separates the gateway token from the relay's state. It is not
 // in the base64url alphabet, so neither half can contain it.
@@ -71,10 +104,17 @@ func (g *gateway) forwardRelayQuestion(req *mcp.CallToolRequest, identity, conv,
 	if len(res.InputRequests) == 0 {
 		return refuse("the relay is busy; try again shortly", "load_shedding")
 	}
-	for _, ir := range res.InputRequests {
+	forwarded := make(mcp.InputRequestMap, len(res.InputRequests))
+	for id, ir := range res.InputRequests {
 		p, ok := ir.(*mcp.ElicitParams)
-		if !ok || (p.Mode != "" && p.Mode != "form") || p.URL != "" {
+		if !ok || (p.Mode != "" && p.Mode != "form") || p.URL != "" ||
+			!asksNothing(p.RequestedSchema) || len(p.Message) > maxRelayQuestion {
 			return refuse("the relay asked for input the gateway does not pass on", "unsupported_request")
+		}
+		forwarded[id] = &mcp.ElicitParams{
+			Mode:            p.Mode,
+			Message:         showable(p.Message),
+			RequestedSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		}
 	}
 	if !canElicit(req) {
@@ -85,7 +125,7 @@ func (g *gateway) forwardRelayQuestion(req *mcp.CallToolRequest, identity, conv,
 	g.audit.Printf("relay.confirm.forwarded tool=%q identity=%q", tool, identity)
 	g.hc.metrics.recordCall(outcomeAsked, 0)
 	return &mcp.CallToolResult{
-		InputRequests: res.InputRequests,
+		InputRequests: forwarded,
 		RequestState:  token + relayStateSep + base64.RawURLEncoding.EncodeToString([]byte(res.RequestState)),
 	}
 }
